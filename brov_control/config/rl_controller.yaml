@@ -1,0 +1,9 @@
+brov_policy_node:
+  ros__parameters:
+    # The bringup launch must supply an installed/exported policy artifact.
+    # An empty default fails closed instead of silently loading a stale model.
+    policy_path: ""
+    vehicle_config: ""
+    obs_rate_hz: 25.0
+    vis_rate_hz: 2.0
+

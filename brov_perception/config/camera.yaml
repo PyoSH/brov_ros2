@@ -1,0 +1,8 @@
+brov_camera_node:
+  ros__parameters:
+    udp_port: 5600
+    frame_id: camera_optical_frame
+    # Empty means $BROV_DATA_DIR/calibration/camera_intrinsics.yaml,
+    # falling back to ~/.ros/brov/calibration/camera_intrinsics.yaml.
+    camera_info_path: ""
+    latency_ms: 200

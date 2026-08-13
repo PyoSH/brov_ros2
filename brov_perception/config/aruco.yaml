@@ -1,0 +1,10 @@
+brov_aruco_pose_node:
+  ros__parameters:
+    dictionary: DICT_4X4_50
+    marker_id: 0
+    marker_length_m: 0.15
+    marker_frame: aruco_reference
+    base_frame: base_link
+    publish_robot_pose: false
+    base_to_camera_xyz: [0.0, 0.0, 0.0]
+    base_to_camera_rpy: [0.0, 0.0, 0.0]

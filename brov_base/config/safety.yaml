@@ -1,0 +1,9 @@
+brov_obs_node:
+  ros__parameters:
+    att_max_age_s: 0.2
+    pos_max_age_s: 0.5
+    ekf_max_age_s: 0.5
+    max_integration_dt_s: 0.3
+    quat_norm_tolerance: 0.1
+    integral_vel_limit: 5.0
+    integral_att_limit: 5.0

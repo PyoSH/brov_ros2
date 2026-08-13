@@ -1,0 +1,5 @@
+# Runtime-only Python dependencies. PyTorch is installed separately from its
+# CPU wheel index for Linux arm64.
+numpy>=1.23,<2
+PyYAML>=6,<7
+pymavlink>=2.4.40,<3

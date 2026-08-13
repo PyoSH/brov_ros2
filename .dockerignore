@@ -1,0 +1,14 @@
+.git
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+.eggs/
+build/
+install/
+log/
+runtime/calibration/
+runtime/bags/
+runtime/logs/
