@@ -78,7 +78,19 @@ class LOSGuidance:
         yaw   = mu.sample_uniform(-torch.pi,     torch.pi,     (n,), self.device)
         return mu.quat_from_euler_xyz(roll, pitch, yaw)
 
-    def reset(self, env_ids: torch.Tensor, initial_quat: torch.Tensor | None = None) -> None:
+    def reset(
+        self,
+        env_ids: torch.Tensor,
+        initial_quat: torch.Tensor | None = None,
+        *,
+        resample_random_attitude: bool = True,
+    ) -> None:
+        """Reset mission progress and heading state for selected environments.
+
+        ``resample_random_attitude=False`` lets a real-vehicle activation keep
+        the random target that was already visible during shadow mode. This
+        prevents ``start_control`` from introducing an unobserved attitude step.
+        """
         self._wp_idx[env_ids] = 0
         self.mission_complete[env_ids] = False
         if self._heading_mode == "straight":
@@ -88,7 +100,7 @@ class LOSGuidance:
             zero = torch.zeros_like(yaw)
             # 시작 roll/pitch는 목표에 포함하지 않고, 시작 yaw만 고정한다.
             self._straight_q_d[env_ids] = mu.quat_from_euler_xyz(zero, zero, yaw)
-        if self._heading_mode == "random_at_waypoint":
+        if self._heading_mode == "random_at_waypoint" and resample_random_attitude:
             self._random_q_d[env_ids] = self._sample_random_attitude(len(env_ids))
 
     def _current_and_next(self, idx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -109,6 +121,8 @@ class LOSGuidance:
         """
         _, next_wp = self._current_and_next(self._wp_idx)
         reached = torch.norm(next_wp - pos_env, dim=-1) < self._reach
+        previous_wp_idx = self._wp_idx.clone()
+        previous_mission_complete = self.mission_complete.clone()
 
         if advance_waypoint:
             if self._loop:
@@ -124,8 +138,20 @@ class LOSGuidance:
 
         cur_wp, next_wp = self._current_and_next(self._wp_idx)
 
-        if advance_waypoint and self._heading_mode == "random_at_waypoint" and reached.any():
-            idx = reached.nonzero(as_tuple=True)[0]
+        # A random attitude is sampled once per actual waypoint-arrival event.
+        # With loop=False the final index intentionally does not advance, so
+        # mission_complete's rising edge represents the final arrival. Sampling
+        # from raw ``reached`` would otherwise command a new random attitude on
+        # every control tick while the vehicle remained at the final waypoint.
+        waypoint_arrival = (self._wp_idx != previous_wp_idx) | (
+            self.mission_complete & ~previous_mission_complete
+        )
+        if (
+            advance_waypoint
+            and self._heading_mode == "random_at_waypoint"
+            and waypoint_arrival.any()
+        ):
+            idx = waypoint_arrival.nonzero(as_tuple=True)[0]
             self._random_q_d[idx] = self._sample_random_attitude(len(idx))
 
         seg = next_wp - cur_wp

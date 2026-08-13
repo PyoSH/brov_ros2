@@ -33,8 +33,9 @@ def main() -> int:
     failed = False
     for name in (
         "torch", "yaml", "pymavlink", "rclpy", "std_msgs", "sensor_msgs",
-        "geometry_msgs", "cv_bridge", "cv2", "gi", "brov_base",
-        "brov_control", "brov_perception", "brov_bringup",
+        "geometry_msgs", "visualization_msgs", "cv_bridge", "cv2", "gi",
+        "brov_base", "brov_control", "brov_perception", "brov_viz",
+        "brov_bringup",
     ):
         try:
             module = importlib.import_module(name)
@@ -53,8 +54,23 @@ def main() -> int:
 
         if not hasattr(cv2, "aruco"):
             raise RuntimeError("cv2.aruco is unavailable")
+        dictionary_name = "DICT_APRILTAG_16h5"
+        if not hasattr(cv2.aruco, dictionary_name):
+            raise RuntimeError(f"cv2.aruco.{dictionary_name} is unavailable")
+        dictionary = cv2.aruco.getPredefinedDictionary(
+            getattr(cv2.aruco, dictionary_name)
+        )
+        marker_count = int(dictionary.bytesList.shape[0])
+        if int(dictionary.markerSize) != 4 or marker_count <= 2:
+            raise RuntimeError(
+                "unexpected AprilTag 16h5 dictionary contract: "
+                f"markerSize={dictionary.markerSize}, count={marker_count}"
+            )
         Gst.init(None)
-        print(f"[OK] camera stack: OpenCV {cv2.__version__} / {Gst.version_string()}")
+        print(
+            f"[OK] camera stack: OpenCV {cv2.__version__} / "
+            f"{Gst.version_string()} / AprilTag 16h5 IDs=0..{marker_count - 1}"
+        )
     except Exception as exc:
         failed = True
         print(f"[FAIL] camera stack: {exc}")
@@ -63,7 +79,8 @@ def main() -> int:
         from ament_index_python.packages import get_package_prefix
 
         for package in (
-            "brov_base", "brov_control", "brov_perception", "brov_bringup"
+            "brov_base", "brov_control", "brov_perception", "brov_viz",
+            "brov_bringup"
         ):
             print(f"[OK] ROS package {package}: {get_package_prefix(package)}")
     except Exception as exc:

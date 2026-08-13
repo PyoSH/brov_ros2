@@ -1,10 +1,10 @@
 brov_checkerboard_calibration:
   ros__parameters:
-    columns: 8
+    columns: 6
     rows: 6
-    square_size_m: 0.030
-    target_samples: 30
-    min_interval_s: 0.5
+    square_size_m: 0.035
+    target_samples: 100
+    min_interval_s: 1.5
     min_descriptor_distance: 0.06
     # Empty selects the same persistent location as camera_info_path.
     output_path: ""

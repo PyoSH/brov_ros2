@@ -1,10 +1,37 @@
 brov_aruco_pose_node:
   ros__parameters:
-    dictionary: DICT_4X4_50
-    marker_id: 0
-    marker_length_m: 0.15
-    marker_frame: aruco_reference
+    # Physical reference: AprilTag 16h5 ID 2.
+    # 4 payload cells + one black border cell per side = 6 cells.
+    # Nominal black outer edge: 6 * 0.070 m = 0.420 m.
+    # White quiet zone is required for detection but excluded from this length.
+    dictionary: DICT_APRILTAG_16h5
+    marker_id: 2
+    marker_length_m: 0.42
+    corner_refinement: SUBPIX
+    marker_frame: apriltag_16h5_2
     base_frame: base_link
-    publish_robot_pose: false
-    base_to_camera_xyz: [0.0, 0.0, 0.0]
-    base_to_camera_rpy: [0.0, 0.0, 0.0]
+    # Raw camera->marker detection is a measurement, not a canonical TF edge.
+    publish_marker_tf: false
+    # Publish base_link pose relative to the observed marker. Do not claim the
+    # canonical marker->base_link TF until localization owns that TF edge.
+    publish_robot_pose: true
+    publish_robot_tf: false
+
+    # Surveyed pool frame: origin at the near/right floor corner, +X along the
+    # nominal 4.0 m pool length, +Y left, +Z up. The marker centre is at
+    # x=3.8 m on the far end. Its printed page top is +pool Z and its face
+    # normal is -pool X. The runtime drawFrameAxes observation is authoritative
+    # for the decoded marker frame: +X=pool +Y, +Y=pool -Z, +Z=pool -X. The
+    # printed bitmap is therefore 180 deg in-plane from the earlier assumption.
+    publish_pool_pose: true
+    pool_frame: pool
+    pool_to_marker_xyz: [3.8, 0.85, 0.24]
+    pool_to_marker_quaternion_xyzw: [-0.5, -0.5, 0.5, 0.5]
+
+    # ^base T_camera_optical. Translation is the Camera_frame position under
+    # /BROV2_Heavy in brov2_custom_physics.usda (metres, USD root origin).
+    # USD camera rotation is intentionally ignored. RPY below is derived from
+    # ROS base FLU to CV optical axes: +Z forward, +X right, +Y down.
+    # This static nominal extrinsic is valid only with camera tilt locked neutral.
+    base_to_camera_xyz: [0.15751251578330994, 0.0052856863476336, 0.06784216314554214]
+    base_to_camera_rpy: [-1.5707963267948966, 0.0, -1.5707963267948966]

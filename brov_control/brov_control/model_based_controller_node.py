@@ -36,7 +36,7 @@ class ModelBasedControllerNode(Node):
     def __init__(self):
         super().__init__("brov_model_based_controller")
         self.declare_parameter("vehicle_config", "")
-        self.declare_parameter("linear_kp", [25.0, 25.0, 35.0])
+        self.declare_parameter("linear_kp", [500.0, 500.0, 500.0])
         self.declare_parameter("linear_ki", [0.0, 0.0, 0.0])
         self.declare_parameter("attitude_kp", [3.0, 3.0, 3.0])
         self.declare_parameter("attitude_ki", [0.0, 0.0, 0.0])

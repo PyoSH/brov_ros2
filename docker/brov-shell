@@ -18,6 +18,7 @@ fi
 current_nolisten="$(defaults read org.xquartz.X11 nolisten_tcp 2>/dev/null || true)"
 if [[ "${current_nolisten}" != "0" ]]; then
     defaults write org.xquartz.X11 nolisten_tcp -bool false
+    killall Xquartz >/dev/null 2>&1 || true
     killall XQuartz >/dev/null 2>&1 || true
 fi
 open -a XQuartz

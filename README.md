@@ -13,6 +13,7 @@ brov_ros2/
 ├── brov_base/        MAVLink, observation, guidance, PWM gateway, vehicle model
 ├── brov_control/     model-based controller and TorchScript policy runtime
 ├── brov_perception/  BlueOS camera, checkerboard calibration, ArUco pose
+├── brov_viz/         pool geometry and raw vision-pose RViz visualization
 ├── brov_bringup/     launch composition and mission configuration
 ├── artifacts/        versioned deployment artifacts and metadata
 ├── runtime/          writable calibration, rosbag, and log output
@@ -22,7 +23,7 @@ brov_ros2/
 └── Makefile
 ```
 
-ROS package 경계와 Git repository 경계는 다르다. 기능별 네 package는 독립적인
+ROS package 경계와 Git repository 경계는 다르다. 기능별 package는 독립적인
 `package.xml`과 dependency를 유지하지만, 동일 vehicle/observation/control contract로
 release되어야 하므로 하나의 Git repository와 tag로 관리한다.
 
@@ -73,6 +74,22 @@ ros2 launch brov_bringup sim2real_demo.launch.py \
 ```
 
 실제 제어 절차는 [docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md)를 따른다.
+Sim2Swim case `a`/`c`의 수조 축소 미션, 배치 및 별도 안전 gate는
+[docs/SIM2SWIM_DEMO.md](docs/SIM2SWIM_DEMO.md)를 따른다.
+
+현재 추진기는 검증된 RCPassThru/`RC_CHANNELS_OVERRIDE` backend로 구동한다.
+후배가 작성한 custom ArduPilot mode로 이관하기 위한 입력 계약, 구현 단계 및
+안전 승인 기준은
+[docs/ACTUATION_BACKEND_ROADMAP.md](docs/ACTUATION_BACKEND_ROADMAP.md)에 기록한다.
+해당 firmware와 interface가 전달되기 전에는 추측한 mode 코드를 추가하지 않는다.
+
+현재 raw ArUco pool pose는 `brov_viz`에서 수조/marker와 함께 RViz로 확인할 수
+있다. 향후 covariance 기반 절대 pose 초기화와 3-D waypoint 편집 방법은
+[docs/RVIZ_POOL_LOCALIZATION_ROADMAP.md](docs/RVIZ_POOL_LOCALIZATION_ROADMAP.md)에
+기록한다. 3-D reconstruction과 NBV 시각화·실행 단계는
+[docs/NBV_RECONSTRUCTION_ROADMAP.md](docs/NBV_RECONSTRUCTION_ROADMAP.md)에
+분리해 기록한다. 현재 RViz 기능은 raw single-frame measurement의 검증용이며,
+localization fusion과 waypoint editor는 여전히 roadmap 범위다.
 
 ## Packages and executables
 
@@ -90,12 +107,17 @@ brov_perception
   checkerboard_calibration_node
   aruco_pose_node
 
+brov_viz
+  pool_scene_node
+  pool_vision.launch.py
+
 brov_bringup
   base.launch.py
   model_demo.launch.py
   rl_demo.launch.py
   camera.launch.py
   sim2real_demo.launch.py
+  sim2swim_demo.launch.py
 ```
 
 ## Runtime data and policy contract

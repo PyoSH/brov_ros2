@@ -42,3 +42,47 @@ def test_terminal_completion_continues_position_and_depth_hold():
     velocity, _ = guidance.compute(torch.tensor([[0.8, 0.0, -0.2]]), q)
     assert velocity[0, 0] > 0.0
     assert torch.allclose(velocity[0, 2], torch.tensor(-0.1), atol=1e-6)
+
+
+def test_random_attitude_is_sampled_once_at_non_looping_final_waypoint():
+    guidance = LOSGuidance(
+        torch.tensor([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]]),
+        "cpu",
+        cruise_speed=0.1,
+        reach_threshold=0.15,
+        heading_mode="random_at_waypoint",
+        loop=False,
+    )
+    sample_calls: list[int] = []
+
+    def deterministic_sample(count: int) -> torch.Tensor:
+        sample_calls.append(count)
+        return torch.tensor([[0.0, 1.0, 0.0, 0.0]])
+
+    guidance._sample_random_attitude = deterministic_sample
+    pose = torch.tensor([[1.0, 0.0, 0.0]])
+    attitude = torch.tensor([[1.0, 0.0, 0.0, 0.0]])
+
+    _, first_target = guidance.compute(pose, attitude)
+    assert bool(guidance.mission_complete[0])
+    assert sample_calls == [1]
+
+    _, second_target = guidance.compute(pose, attitude)
+    assert sample_calls == [1]
+    assert torch.equal(second_target, first_target)
+
+
+def test_random_shadow_target_can_be_preserved_across_activation_reset():
+    guidance = LOSGuidance(
+        torch.tensor([[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]]),
+        "cpu",
+        heading_mode="random_at_waypoint",
+    )
+    shadow_target = guidance._random_q_d.clone()
+
+    guidance.reset(
+        torch.tensor([0]),
+        resample_random_attitude=False,
+    )
+
+    assert torch.equal(guidance._random_q_d, shadow_target)

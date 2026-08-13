@@ -29,3 +29,10 @@ ros2 run brov_base diag_thruster_map --help
 The vehicle YAML is available both through
 `brov_base.vendor.params.load_brov2_yaml()` and under the installed ament share
 directory at `share/brov_base/config/brov2_heavy.yaml`.
+
+Tank missions can enable fail-closed waypoint input validation with
+`waypoint_bounds_enabled`, `waypoint_min_xyz`, and `waypoint_max_xyz`. Bounds
+are inclusive in the selected mission frame, and equal minimum/maximum values
+can lock an axis to a constant depth or centerline. They reject invalid mission
+files before MAVLink connection; they do not monitor the measured position and
+must not be treated as a runtime geofence.

@@ -31,6 +31,7 @@ obs 자체는 여전히 정책과 완전히 분리되어 있어 `ros2 topic echo
     /brov/debug/pos_ned    (Float32MultiArray, 3)  — 원시 LOCAL_POSITION_NED (검증용)
     /brov/debug/vel_ned    (Float32MultiArray, 3)  — 원시 LOCAL_POSITION_NED 속도 (검증용)
     /brov/debug/att_quat_ned (Float32MultiArray, 4) — 원시 ATTITUDE_QUATERNION [w,x,y,z] (검증용)
+    /brov/debug/q_desired_zup (Float32MultiArray, 4) — 현재 목표 자세 [w,x,y,z] (정책 Z-up 규약)
     /brov/target_waypoint  (Float32MultiArray, 3)  — 목표 웨이포인트(선택 frame, m)
     /brov/waypoint_idx     (Int32)                  — 현재 세그먼트 시작 인덱스(0-base)
     /brov/mission_complete (Bool)                   — loop:=false일 때만 의미 있음, 마지막 웨이포인트 도달 시 True
@@ -72,12 +73,8 @@ from std_srvs.srv import Trigger
 from brov_base.mavlink_interface import RealRobotInterface
 from brov_base.observation import ObservationBuilder
 from brov_base.guidance import LOSGuidance
+from brov_base.mission import parse_waypoints, validate_waypoint_bounds
 from brov_base import math_utils as mu
-
-
-def _parse_waypoints(s: str) -> torch.Tensor:
-    pts = [[float(v) for v in wp.split(",")] for wp in s.split(";")]
-    return torch.tensor(pts).unsqueeze(0)
 
 
 class ObsNode(Node):
@@ -88,6 +85,9 @@ class ObsNode(Node):
         self.declare_parameter("cruise_speed", 0.2)
         self.declare_parameter("heading_mode", "straight")
         self.declare_parameter("waypoint_frame", "start_heading")
+        self.declare_parameter("waypoint_bounds_enabled", False)
+        self.declare_parameter("waypoint_min_xyz", [0.0, 0.0, 0.0])
+        self.declare_parameter("waypoint_max_xyz", [0.0, 0.0, 0.0])
         self.declare_parameter("reach_threshold", 0.15)
         self.declare_parameter("lookahead_dist", 1.0)
         self.declare_parameter("depth_hold_kp", 0.8)
@@ -109,7 +109,7 @@ class ObsNode(Node):
         self.declare_parameter("camera_tilt_max_rate_deg_s", 30.0)
 
         conn = self.get_parameter("connection").value
-        waypoints = _parse_waypoints(self.get_parameter("waypoints").value)
+        waypoints = parse_waypoints(self.get_parameter("waypoints").value)
         waypoint_frame = str(self.get_parameter("waypoint_frame").value)
         heading_mode = str(self.get_parameter("heading_mode").value)
         if waypoint_frame not in {"ned", "start_heading"}:
@@ -119,6 +119,17 @@ class ObsNode(Node):
             raise ValueError(
                 f"heading_mode={heading_mode!r} invalid; expected {sorted(valid_heading_modes)}"
             )
+        waypoint_bounds_enabled = bool(
+            self.get_parameter("waypoint_bounds_enabled").value
+        )
+        waypoint_min_xyz = self.get_parameter("waypoint_min_xyz").value
+        waypoint_max_xyz = self.get_parameter("waypoint_max_xyz").value
+        validate_waypoint_bounds(
+            waypoints,
+            enabled=waypoint_bounds_enabled,
+            minimum_xyz=waypoint_min_xyz,
+            maximum_xyz=waypoint_max_xyz,
+        )
         self._camera_tilt_min_deg = float(self.get_parameter("camera_tilt_min_deg").value)
         self._camera_tilt_max_deg = float(self.get_parameter("camera_tilt_max_deg").value)
         self._camera_tilt_max_rate_deg_s = float(
@@ -185,6 +196,9 @@ class ObsNode(Node):
         self.pub_v_desired_body_zup = self.create_publisher(
             Float32MultiArray, "/brov/debug/v_desired_body_zup", 10
         )
+        self.pub_q_desired_zup = self.create_publisher(
+            Float32MultiArray, "/brov/debug/q_desired_zup", 10
+        )
         self.pub_servo_output = self.create_publisher(
             Int32MultiArray, "/brov/debug/servo_output_us", 10
         )
@@ -230,6 +244,12 @@ class ObsNode(Node):
             f"heading_mode={heading_mode} — "
             "적분/PWM은 /brov/start_control 호출 전까지 동결"
         )
+        if waypoint_bounds_enabled:
+            self.get_logger().info(
+                "waypoint input bounds enabled — "
+                f"min={list(waypoint_min_xyz)}, max={list(waypoint_max_xyz)} "
+                f"({waypoint_frame} frame; not a runtime geofence)"
+            )
         self.get_logger().info(
             "camera tilt: /brov/camera_tilt/command [-1,1] → "
             f"[{self._camera_tilt_min_deg:.1f}, {self._camera_tilt_max_deg:.1f}]deg, "
@@ -304,7 +324,13 @@ class ObsNode(Node):
         initial_quat = self.obs_builder.attitude_in_waypoint_frame(
             snap["att_quat_ned"]
         ).unsqueeze(0)
-        self.guidance.reset(torch.zeros(1, dtype=torch.long), initial_quat=initial_quat)
+        self.guidance.reset(
+            torch.zeros(1, dtype=torch.long),
+            initial_quat=initial_quat,
+            # The initial random target has already been published in shadow
+            # mode. Preserve it so activation cannot introduce an unseen jump.
+            resample_random_attitude=False,
+        )
         initial_yaw_ned_deg = float(
             torch.rad2deg(mu.yaw_from_quat(snap["att_quat_ned"]))
         )
@@ -419,6 +445,9 @@ class ObsNode(Node):
         )
         self.pub_v_desired_body_zup.publish(
             Float32MultiArray(data=debug["v_d_b_zup"].tolist())
+        )
+        self.pub_q_desired_zup.publish(
+            Float32MultiArray(data=debug["q_d_zup"].tolist())
         )
         if self._control_active:
             self._active_obs_published = True

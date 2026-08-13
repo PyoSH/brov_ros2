@@ -1,0 +1,21 @@
+brov_obs_node:
+  ros__parameters:
+    # Sim2Swim real trial (a): 2.0 m out-and-back along the start heading.
+    waypoints: "0,0,0;2.0,0,0"
+    waypoint_frame: "start_heading"
+    heading_mode: "align"
+    loop: true
+
+    # Conservative first-water-test guidance settings.
+    cruise_speed: 0.10
+    lookahead_dist: 0.40
+    reach_threshold: 0.15
+    depth_hold_kp: 0.8
+    depth_speed_limit: 0.05
+    terminal_hold_kp: 0.5
+    terminal_speed_limit: 0.05
+
+    # Input validation only: these bounds do not monitor the measured vehicle pose.
+    waypoint_bounds_enabled: true
+    waypoint_min_xyz: [0.0, 0.0, 0.0]
+    waypoint_max_xyz: [2.0, 0.0, 0.0]

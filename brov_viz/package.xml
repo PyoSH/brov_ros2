@@ -1,19 +1,25 @@
 <?xml version="1.0"?>
-<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd"
+  schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>brov_bringup</name>
+  <name>brov_viz</name>
   <version>0.1.0</version>
-  <description>Launch composition for BlueROV2 sim-to-real experiments.</description>
+  <description>Pool and raw vision-pose visualization for BlueROV2.</description>
+
   <maintainer email="jeongmok99@koreatech.ac.kr">Pyo Seunghyeon</maintainer>
   <license>Proprietary</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
 
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-  <exec_depend>brov_base</exec_depend>
-  <exec_depend>brov_control</exec_depend>
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>brov_perception</exec_depend>
 
   <test_depend>ament_pytest</test_depend>

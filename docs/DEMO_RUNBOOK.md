@@ -99,7 +99,79 @@ ros2 launch brov_bringup camera.launch.py aruco:=true
 
 Do not enable ArUco and calibration simultaneously.
 
-## 7. Normal stop
+The default reference configured in `brov_perception/config/aruco.yaml` is
+AprilTag `16h5`, integer ID `2`. Its nominal 70 mm cell gives a 420 mm outer
+black-edge length; the surrounding white quiet zone is physically required but
+is not part of `marker_length_m`. Before metric testing, measure the finished
+black edge and update the YAML if it differs from 0.420 m.
+
+Keep the vehicle control stopped and lock camera tilt at its calibrated neutral
+position. Verify the loaded contract and relative camera-to-marker output:
+
+```bash
+ros2 param get /brov_aruco_pose_node dictionary
+ros2 param get /brov_aruco_pose_node marker_id
+ros2 param get /brov_aruco_pose_node marker_length_m
+ros2 topic echo /brov/aruco/visible
+ros2 topic echo --once /brov/aruco/marker_pose
+ros2 topic echo --once /brov/aruco/robot_pose
+ros2 topic echo --once /brov/aruco/robot_pose_pool
+rqt_image_view /brov/aruco/debug_image
+```
+
+`/brov/aruco/marker_pose` is expressed in `camera_optical_frame` (+x right,
++y down, +z forward). `/brov/aruco/robot_pose` is the `base_link` pose relative
+to the observed marker. It uses the nominal camera position from
+`/BROV2_Heavy/Camera_frame` in `brov2_custom_physics.usda`; USD camera rotation
+is ignored and the orientation is derived from the CV optical convention.
+
+The model-derived extrinsic assumes `base_link` equals the USD robot root and
+is valid only with tilt locked neutral. The deployed marker survey fixes the
+black-square centre at pool `[3.80, 0.85, 0.24]` m, with printed page top along
+pool `+Z` and the marker face normal along pool `-X`. Runtime OpenCV axes show
+decoded marker `+X=pool +Y`, `+Y=pool -Z`, and `+Z=pool -X`; this measured axis
+contract, rather than the page label alone, defines the configured quaternion.
+Therefore
+`/brov/aruco/robot_pose_pool` is the raw, single-frame `base_link` pose in the
+Z-up `pool` frame. It is not filtered or fused and must not directly drive the
+controller. The perception node intentionally broadcasts neither the raw
+`camera -> marker` TF nor canonical `marker -> base_link`/`pool -> base_link`
+TFs (`publish_marker_tf: false`, `publish_robot_tf: false`).
+
+## 7. RViz pool-frame verification
+
+Keep the camera/AprilTag launch running and open a second container terminal:
+
+```bash
+ros2 launch brov_viz pool_vision.launch.py
+```
+
+The interactive window currently requires a compatible Linux display. The
+macOS XQuartz path is suitable for rqt but is not qualified for RViz's
+OGRE/OpenGL renderer; use the headless validation below until a dedicated
+viewer bridge is provided.
+
+The RViz fixed frame is `pool`. It displays the nominal 4.0 x 1.7 x 1.1 m
+pool, the surveyed 420 mm tag, and a translucent raw-vision robot proxy with
+FLU axes. The proxy is magenta inside the nominal pool, red outside it, and is
+deleted when `/brov/aruco/visible` becomes false or no new pose arrives for
+0.5 s. The AprilTag debug image is shown in the same RViz window.
+
+This launch starts no camera, controller, MAVLink owner, TF broadcaster, arm,
+or control service. It uses RViz's Identity transformer only for messages that
+already have `frame_id=pool`; do not add other-frame displays to this temporary
+configuration. The final localization design will replace it with the
+canonical `pool -> odom -> base_link` TF chain.
+
+Headless topic validation is also available:
+
+```bash
+ros2 launch brov_viz pool_vision.launch.py rviz:=false
+ros2 topic echo --once /brov/viz/pool
+ros2 topic echo --once /brov/viz/vision_robot
+```
+
+## 8. Normal stop
 
 Model controller:
 
