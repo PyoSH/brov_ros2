@@ -109,6 +109,8 @@ def test_pool_profile_is_safe_and_forces_both_gates(monkeypatch) -> None:
     assert defaults["demo_orchestrator"] == "true"
     assert defaults["demo_case"] == "a"
     assert defaults["auto_generate_case_a_path"] == "true"
+    assert defaults["case_a_target_pool_z_m"] == "0.70"
+    assert defaults["case_a_segment_length_m"] == "0.20"
     assert defaults["rviz"] == "false"
     assert forwarded["require_pool_localization"] == "true"
     assert forwarded["require_resolved_mission"] == "true"

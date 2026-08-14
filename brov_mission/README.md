@@ -30,9 +30,12 @@ the valid identity quaternion `[0,0,0,1]` (or the equivalent negative
 quaternion). `orientation_support_enabled=true` fails node startup rather than
 silently ignoring requested attitudes.
 
-The default `brov_pool_position_mission_v1` contract is frozen to `straight`
-and `align`. It excludes legacy `upright`: yaw zero in a start-relative mission
-frame is not generally pool yaw zero under a full-SE(3) localization alignment.
+The default `brov_pool_position_mission_v1` contract supports deterministic
+`straight`, `align`, and the demo-specific `takeoff_then_align`. The latter
+requires exactly three points and `loop=true`: segment 0 is used once with the
+initial level heading, then points 1 and 2 form the LOS-aligned loop. It excludes
+legacy `upright`: yaw zero in a start-relative mission frame is not generally
+pool yaw zero under a full-SE(3) localization alignment.
 
 `brov_pool_position_mission_v2` is a separately versioned, random-attitude
 contract. It requires `heading_mode=random_at_waypoint`, `loop=true`, and a

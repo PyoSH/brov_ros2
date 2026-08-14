@@ -119,7 +119,7 @@ class MissionManagerNode(Node):
         self.declare_parameter("heading_mode", "straight")
         self.declare_parameter("loop", False)
         self.declare_parameter(
-            "allowed_heading_modes", ["straight", "align"]
+            "allowed_heading_modes", ["straight", "align", "takeoff_then_align"]
         )
         self.declare_parameter("random_attitude_seed", 0)
         self.declare_parameter(

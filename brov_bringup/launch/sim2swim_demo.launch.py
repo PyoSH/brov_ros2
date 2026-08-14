@@ -75,6 +75,8 @@ def _include_selected_case(context):
             "camera_info_path",
             "rviz",
             "demo_orchestrator",
+            "case_a_target_pool_z_m",
+            "case_a_segment_length_m",
             "require_pool_localization",
             "require_resolved_mission",
         )
@@ -145,7 +147,7 @@ def generate_launch_description() -> LaunchDescription:
                 default_value="a",
                 choices=["a", "c"],
                 description=(
-                    "Resolved Sim2Swim profile: (a) position-v1/align or "
+                    "Resolved Sim2Swim profile: (a) takeoff+align loop or "
                     "(c) random-attitude-v2."
                 ),
             ),
@@ -205,6 +207,16 @@ def generate_launch_description() -> LaunchDescription:
                     "Expose the three-operation Case-A demo API without "
                     "performing any operation during launch."
                 ),
+            ),
+            DeclareLaunchArgument(
+                "case_a_target_pool_z_m",
+                default_value="0.70",
+                description="Case-A takeoff target in pool-frame +Z metres.",
+            ),
+            DeclareLaunchArgument(
+                "case_a_segment_length_m",
+                default_value="0.20",
+                description="Horizontal Case-A loop length in metres.",
             ),
             DeclareLaunchArgument(
                 "policy_path",

@@ -18,7 +18,9 @@ RANDOM_ATTITUDE_REFERENCE_FRAME = "pool_zup_flu"
 RANDOM_ATTITUDE_GENERATOR_VERSION = "sha256_counter_uniform_rpy_v1"
 
 CONTRACT_HEADING_MODES = {
-    POOL_POSITION_MISSION_V1: frozenset({"straight", "align"}),
+    POOL_POSITION_MISSION_V1: frozenset(
+        {"straight", "align", "takeoff_then_align"}
+    ),
     POOL_POSITION_MISSION_V2: frozenset({"random_at_waypoint"}),
 }
 

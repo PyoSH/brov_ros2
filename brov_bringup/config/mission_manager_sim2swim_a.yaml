@@ -1,7 +1,6 @@
 brov_mission_manager:
   ros__parameters:
-    # Sim2Swim case A keeps the position-only v1 contract.  The operator
-    # supplies two absolute pool points; align turns the vehicle along the LOS.
+    # P0->P1 is a one-shot level takeoff.  P1<->P2 then loops with LOS alignment.
     contract_version: brov_pool_position_mission_v1
     pool_frame: pool
     odom_frame: odom
@@ -20,18 +19,18 @@ brov_mission_manager:
     max_first_point_distance_m: 0.30
     min_segment_length_m: 0.05
     max_segment_length_m: 2.0
-    min_waypoints: 2
-    max_waypoints: 2
+    min_waypoints: 3
+    max_waypoints: 3
 
     localization_max_age_s: 1.0
     odometry_max_age_s: 0.5
 
-    cruise_speed: 0.10
+    cruise_speed: 0.50 # 0.10
     lookahead_dist: 0.40
     reach_threshold: 0.15
-    max_cruise_speed: 0.30
+    max_cruise_speed: 0.60 #0.30
     max_lookahead_dist: 1.00
     max_reach_threshold: 0.50
-    heading_mode: align
+    heading_mode: takeoff_then_align
     loop: true
-    allowed_heading_modes: [align]
+    allowed_heading_modes: [takeoff_then_align]

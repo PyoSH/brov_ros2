@@ -48,8 +48,13 @@ def case_a_points(
     safe_max_xyz,
     segment_length_m: float,
     max_entry_distance_m: float,
-) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    """Generate a short Case-A line while preserving the mission gates."""
+    target_pool_z_m: float = 0.70,
+) -> tuple[
+    tuple[float, float, float],
+    tuple[float, float, float],
+    tuple[float, float, float],
+]:
+    """Generate one takeoff segment followed by a horizontal Case-A loop."""
     current = _finite_triplet(current_position, "current_position")
     minimum = _finite_triplet(safe_min_xyz, "safe_min_xyz")
     maximum = _finite_triplet(safe_max_xyz, "safe_max_xyz")
@@ -57,10 +62,18 @@ def case_a_points(
         raise ValueError("each safe_min_xyz value must be below safe_max_xyz")
     length = float(segment_length_m)
     entry_limit = float(max_entry_distance_m)
+    target_z = float(target_pool_z_m)
     if not math.isfinite(length) or length <= 0.0:
         raise ValueError("segment_length_m must be finite and positive")
     if not math.isfinite(entry_limit) or entry_limit <= 0.0:
         raise ValueError("max_entry_distance_m must be finite and positive")
+    if not math.isfinite(target_z):
+        raise ValueError("target_pool_z_m must be finite")
+    if target_z < minimum[2] or target_z > maximum[2]:
+        raise ValueError(
+            f"target_pool_z_m={target_z:g} is outside the safe z range "
+            f"[{minimum[2]:g}, {maximum[2]:g}]"
+        )
 
     first = tuple(
         min(max(value, lower), upper)
@@ -73,16 +86,23 @@ def case_a_points(
             f"the current pose (limit {entry_limit:.3f} m)"
         )
 
+    takeoff = (first[0], first[1], target_z)
+    if math.dist(first, takeoff) < 0.05:
+        raise ValueError(
+            "takeoff segment is shorter than 0.05 m; start below the target "
+            "pool z or disable automatic Case-A takeoff"
+        )
+
     centre_x = 0.5 * (minimum[0] + maximum[0])
-    direction = 1.0 if first[0] <= centre_x else -1.0
-    second_x = first[0] + direction * length
-    if second_x < minimum[0] or second_x > maximum[0]:
+    direction = 1.0 if takeoff[0] <= centre_x else -1.0
+    end_x = takeoff[0] + direction * length
+    if end_x < minimum[0] or end_x > maximum[0]:
         direction *= -1.0
-        second_x = first[0] + direction * length
-    if second_x < minimum[0] or second_x > maximum[0]:
+        end_x = takeoff[0] + direction * length
+    if end_x < minimum[0] or end_x > maximum[0]:
         raise ValueError("Case-A segment does not fit inside the pool safe box")
-    second = (second_x, first[1], first[2])
-    return first, second
+    end = (end_x, takeoff[1], target_z)
+    return first, takeoff, end
 
 
 def _path_points(message: Path) -> tuple[tuple[float, float, float], ...]:
@@ -111,6 +131,7 @@ class DemoOrchestratorNode(Node):
         self.declare_parameter("safe_min_xyz", [0.35, 0.30, 0.20])
         self.declare_parameter("safe_max_xyz", [3.65, 1.40, 0.90])
         self.declare_parameter("case_a_segment_length_m", 0.20)
+        self.declare_parameter("case_a_target_pool_z_m", 0.70)
         self.declare_parameter("max_entry_distance_m", 0.30)
         self.declare_parameter("localization_min_samples", 20)
         self.declare_parameter("service_wait_timeout_s", 5.0)
@@ -147,6 +168,9 @@ class DemoOrchestratorNode(Node):
         )
         self._segment_length = float(
             self.get_parameter("case_a_segment_length_m").value
+        )
+        self._target_pool_z = float(
+            self.get_parameter("case_a_target_pool_z_m").value
         )
         self._max_entry_distance = float(
             self.get_parameter("max_entry_distance_m").value
@@ -529,17 +553,18 @@ class DemoOrchestratorNode(Node):
 
     def _case_a_path(self, envelope: AlignedOdometry) -> Path:
         position = envelope.odometry.pose.pose.position
-        first, second = case_a_points(
+        first, takeoff, end = case_a_points(
             (position.x, position.y, position.z),
             self._safe_min,
             self._safe_max,
             self._segment_length,
             self._max_entry_distance,
+            self._target_pool_z,
         )
         message = Path()
         message.header.stamp = self.get_clock().now().to_msg()
         message.header.frame_id = self._pool_frame
-        for point in (first, second):
+        for point in (first, takeoff, end):
             stamped = PoseStamped()
             stamped.header = message.header
             stamped.pose.position.x = point[0]

@@ -18,7 +18,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_case_a_generator_allows_a_short_bottom_entry() -> None:
-    first, second = case_a_points(
+    first, takeoff, end = case_a_points(
         (1.70, 0.75, 0.175618),
         (0.35, 0.30, 0.20),
         (3.65, 1.40, 0.90),
@@ -27,12 +27,13 @@ def test_case_a_generator_allows_a_short_bottom_entry() -> None:
     )
 
     assert first == pytest.approx((1.70, 0.75, 0.20))
-    assert second == pytest.approx((1.90, 0.75, 0.20))
+    assert takeoff == pytest.approx((1.70, 0.75, 0.70))
+    assert end == pytest.approx((1.90, 0.75, 0.70))
     assert math.dist((1.70, 0.75, 0.175618), first) < 0.03
 
 
 def test_case_a_generator_moves_toward_pool_centre() -> None:
-    first, second = case_a_points(
+    first, takeoff, end = case_a_points(
         (2.70, 0.75, 0.30),
         (0.35, 0.30, 0.20),
         (3.65, 1.40, 0.90),
@@ -41,7 +42,20 @@ def test_case_a_generator_moves_toward_pool_centre() -> None:
     )
 
     assert first == pytest.approx((2.70, 0.75, 0.30))
-    assert second == pytest.approx((2.50, 0.75, 0.30))
+    assert takeoff == pytest.approx((2.70, 0.75, 0.70))
+    assert end == pytest.approx((2.50, 0.75, 0.70))
+
+
+def test_case_a_generator_rejects_target_outside_safe_z() -> None:
+    with pytest.raises(ValueError, match="outside the safe z range"):
+        case_a_points(
+            (1.70, 0.75, 0.20),
+            (0.35, 0.30, 0.20),
+            (3.65, 1.40, 0.90),
+            0.20,
+            0.30,
+            1.0,
+        )
 
 
 def test_case_a_generator_rejects_a_distant_unsafe_start() -> None:

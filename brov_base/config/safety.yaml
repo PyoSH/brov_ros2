@@ -32,7 +32,7 @@ brov_obs_node:
     max_prepare_attitude_drift_deg: 10.0
     max_resolved_waypoints: 50
     max_resolved_segment_length_m: 4.0
-    max_resolved_cruise_speed: 0.30
+    max_resolved_cruise_speed: 0.60 # 0.30
     max_resolved_lookahead_dist: 1.0
     max_resolved_reach_threshold: 0.50
 

@@ -181,6 +181,21 @@ def generate_launch_description() -> LaunchDescription:
                 ),
             ),
             DeclareLaunchArgument(
+                "case_a_target_pool_z_m",
+                default_value="0.70",
+                description=(
+                    "Pool-frame base_link height used by the automatic "
+                    "Case-A takeoff prefix."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "case_a_segment_length_m",
+                default_value="0.20",
+                description=(
+                    "Horizontal P1<->P2 Case-A loop length in metres."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "policy_path", default_value=os.environ.get("BROV_POLICY_PATH", "")
             ),
             DeclareLaunchArgument("udp_port", default_value="5600"),
@@ -279,6 +294,14 @@ def generate_launch_description() -> LaunchDescription:
                         "auto_generate_case_a_path": ParameterValue(
                             LaunchConfiguration("auto_generate_case_a_path"),
                             value_type=bool,
+                        ),
+                        "case_a_target_pool_z_m": ParameterValue(
+                            LaunchConfiguration("case_a_target_pool_z_m"),
+                            value_type=float,
+                        ),
+                        "case_a_segment_length_m": ParameterValue(
+                            LaunchConfiguration("case_a_segment_length_m"),
+                            value_type=float,
                         ),
                     }
                 ],

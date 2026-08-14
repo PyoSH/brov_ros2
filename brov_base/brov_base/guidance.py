@@ -214,7 +214,13 @@ class LOSGuidance:
         random_attitude_config: RandomAttitudeConfig | None = None,
         pool_to_mission_quaternion: torch.Tensor | None = None,
     ):
-        valid_heading_modes = {"align", "upright", "straight", "random_at_waypoint"}
+        valid_heading_modes = {
+            "align",
+            "upright",
+            "straight",
+            "takeoff_then_align",
+            "random_at_waypoint",
+        }
         if heading_mode not in valid_heading_modes:
             raise ValueError(
                 f"heading_mode={heading_mode!r} invalid; "
@@ -268,6 +274,12 @@ class LOSGuidance:
             raise ValueError("terminal hold gain/speed limit은 양수여야 함")
 
         self.num_envs, self.num_wp, _ = waypoints.shape
+        if heading_mode == "takeoff_then_align" and (
+            not loop or self.num_wp != 3
+        ):
+            raise ValueError(
+                "takeoff_then_align requires loop=true and exactly three waypoints"
+            )
         self._wp_idx = torch.zeros(self.num_envs, dtype=torch.long, device=device)
         # loop=False일 때만 의미 있음 — 마지막 웨이포인트 도달 후 True로 고정,
         # 이후 final waypoint position hold로 전환한다. 실배포 미션은 보통 한 번
@@ -347,7 +359,7 @@ class LOSGuidance:
         self._elapsed_s[env_ids] = 0.0
         self._lap_count[env_ids] = 0
         self._termination_reason = None
-        if self._heading_mode == "straight":
+        if self._heading_mode in {"straight", "takeoff_then_align"}:
             if initial_quat is None:
                 raise ValueError("straight heading reset에는 initial_quat가 필요함")
             yaw = mu.yaw_from_quat(initial_quat)
@@ -384,7 +396,15 @@ class LOSGuidance:
 
     def _current_and_next(self, idx: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         env_i = torch.arange(self.num_envs, device=self.device)
-        return self._wp[env_i, idx], self._wp[env_i, (idx + 1) % self.num_wp]
+        if self._heading_mode == "takeoff_then_align":
+            next_idx = torch.where(
+                idx == self.num_wp - 1,
+                torch.ones_like(idx),
+                idx + 1,
+            )
+        else:
+            next_idx = (idx + 1) % self.num_wp
+        return self._wp[env_i, idx], self._wp[env_i, next_idx]
 
     def compute(
         self,
@@ -416,7 +436,14 @@ class LOSGuidance:
             )
 
         _, next_wp = self._current_and_next(self._wp_idx)
-        position_reached = torch.norm(next_wp - pos_env, dim=-1) < self._reach
+        position_error = torch.norm(next_wp - pos_env, dim=-1)
+        position_reached = position_error < self._reach
+        if self._heading_mode == "takeoff_then_align":
+            # Do not begin the horizontal loop while still far below its plane.
+            takeoff_reached = position_error < min(self._reach, 0.05)
+            position_reached = torch.where(
+                self._wp_idx == 0, takeoff_reached, position_reached
+            )
         if self._random_attitude_config is None:
             reached = position_reached
         else:
@@ -457,7 +484,15 @@ class LOSGuidance:
 
         if advance_waypoint:
             if self._loop:
-                self._wp_idx = torch.where(reached, (self._wp_idx + 1) % self.num_wp, self._wp_idx)
+                if self._heading_mode == "takeoff_then_align":
+                    next_idx = torch.where(
+                        self._wp_idx == self.num_wp - 1,
+                        torch.ones_like(self._wp_idx),
+                        self._wp_idx + 1,
+                    )
+                else:
+                    next_idx = (self._wp_idx + 1) % self.num_wp
+                self._wp_idx = torch.where(reached, next_idx, self._wp_idx)
                 if self._random_attitude_config is not None:
                     wrapped = reached & (previous_wp_idx == self.num_wp - 1)
                     self._lap_count += wrapped.to(self._lap_count.dtype)
@@ -551,6 +586,13 @@ class LOSGuidance:
             q_d = _heading_from_direction(v_d_world, self.device)
         elif self._heading_mode == "straight":
             q_d = self._straight_q_d
+        elif self._heading_mode == "takeoff_then_align":
+            aligned = _heading_from_direction(v_d_world, self.device)
+            q_d = torch.where(
+                (self._wp_idx == 0).unsqueeze(-1),
+                self._straight_q_d,
+                aligned,
+            )
         elif self._heading_mode == "random_at_waypoint":
             q_d = self._random_q_d
         else:   # "upright": NED/mission frame yaw=0

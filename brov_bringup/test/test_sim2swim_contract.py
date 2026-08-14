@@ -68,17 +68,17 @@ def _defaults(description) -> dict[str, str]:
     }
 
 
-def test_case_a_uses_position_v1_align_profile() -> None:
+def test_case_a_uses_position_v1_takeoff_then_align_profile() -> None:
     profile = _yaml_parameters(
         "mission_manager_sim2swim_a.yaml", "brov_mission_manager"
     )
 
     assert profile["contract_version"] == "brov_pool_position_mission_v1"
-    assert profile["heading_mode"] == "align"
-    assert profile["allowed_heading_modes"] == ["align"]
+    assert profile["heading_mode"] == "takeoff_then_align"
+    assert profile["allowed_heading_modes"] == ["takeoff_then_align"]
     assert profile["loop"] is True
-    assert profile["min_waypoints"] == 2
-    assert profile["max_waypoints"] == 2
+    assert profile["min_waypoints"] == 3
+    assert profile["max_waypoints"] == 3
     assert profile["cruise_speed"] == pytest.approx(0.10)
     assert profile["lookahead_dist"] == pytest.approx(0.40)
     assert profile["reach_threshold"] == pytest.approx(0.15)
@@ -187,6 +187,8 @@ def test_launch_has_safe_fixed_pool_defaults(monkeypatch) -> None:
     assert defaults["send_pwm"] == "false"
     assert defaults["arm"] == "false"
     assert defaults["demo_orchestrator"] == "true"
+    assert defaults["case_a_target_pool_z_m"] == "0.70"
+    assert defaults["case_a_segment_length_m"] == "0.20"
     assert defaults["camera"] == "true"
     assert defaults["aruco"] == "true"
     assert defaults["require_pool_localization"] == "true"
@@ -251,6 +253,14 @@ def test_case_selects_rl_pool_profile(
     assert arguments["auto_generate_case_a_path"] == (
         "true" if case == "a" else "false"
     )
+    assert perform_substitutions(
+        LaunchContext(),
+        arguments["case_a_target_pool_z_m"].variable_name,
+    ) == "case_a_target_pool_z_m"
+    assert perform_substitutions(
+        LaunchContext(),
+        arguments["case_a_segment_length_m"].variable_name,
+    ) == "case_a_segment_length_m"
     assert perform_substitutions(
         LaunchContext(),
         arguments["require_pool_localization"].variable_name,

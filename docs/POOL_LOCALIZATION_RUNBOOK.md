@@ -13,7 +13,8 @@ ros2 service call /brov/demo/stop std_srvs/srv/Trigger "{}"
 ```
 
 PREPARE는 camera-neutral 확인, sample 수집, full-SE(3) one-shot 초기화, 현재 pose 기반
-Case-A 2점 pool 경로 생성, validate/commit, base PREPARE를 묶는다. START는 기존 ARM과
+Case-A 3점 경로(`P0→P1(z=0.70)` takeoff 후 `P1↔P2` loop) 생성,
+validate/commit, base PREPARE를 묶는다. START는 기존 ARM과
 START 및 선택된 controller의 첫 실제 PWM 확인을 묶는다. STOP은 gate-close, controller
 stop(model인 경우), neutral/DISARM 순서를 묶는다. 어떤 내부 gate가 거부하면 상위
 서비스도 실패하고 그 이유를 그대로 반환한다. `/brov/estop`은 통합하지 않는다.

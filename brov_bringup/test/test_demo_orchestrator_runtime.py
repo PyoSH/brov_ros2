@@ -243,8 +243,10 @@ def test_prepare_start_stop_runtime_contract() -> None:
         assert fake.initialize_calls == 3
         assert fake.initialize_min_samples == 0
         assert fake.draft is not None
-        assert len(fake.draft.poses) == 2
+        assert len(fake.draft.poses) == 3
         assert fake.draft.poses[0].pose.position.z == 0.20
+        assert fake.draft.poses[1].pose.position.z == 0.70
+        assert fake.draft.poses[2].pose.position.z == 0.70
 
         rejected_start = _call(start)
         assert not rejected_start.success

@@ -298,7 +298,13 @@ class ObsNode(Node):
         heading_mode = str(self.get_parameter("heading_mode").value)
         if waypoint_frame not in {"ned", "start_heading"}:
             raise ValueError("waypoint_frame은 'ned' 또는 'start_heading'이어야 함")
-        valid_heading_modes = {"align", "upright", "straight", "random_at_waypoint"}
+        valid_heading_modes = {
+            "align",
+            "upright",
+            "straight",
+            "takeoff_then_align",
+            "random_at_waypoint",
+        }
         if heading_mode not in valid_heading_modes:
             raise ValueError(
                 f"heading_mode={heading_mode!r} invalid; expected {sorted(valid_heading_modes)}"
@@ -1150,10 +1156,18 @@ class ObsNode(Node):
             return "resolved mission canonical top-level keys mismatch"
         random_config = None
         if mission.contract_version == _POOL_MISSION_V1:
-            # V1 is frozen as the original position-only straight/align
-            # contract.  Random behavior must never be smuggled into it.
-            if mission.heading_mode not in {"straight", "align"}:
+            # V1 remains position-only. takeoff_then_align is a deterministic
+            # three-point demo mode; random behavior must not enter this contract.
+            if mission.heading_mode not in {
+                "straight",
+                "align",
+                "takeoff_then_align",
+            }:
                 return "resolved mission v1 heading_mode is not allowed"
+            if mission.heading_mode == "takeoff_then_align" and (
+                not bool(mission.loop) or waypoint_count != 3
+            ):
+                return "takeoff_then_align requires loop=true and exactly three waypoints"
         else:
             if mission.heading_mode != "random_at_waypoint":
                 return "resolved mission v2 requires random_at_waypoint"
@@ -1306,7 +1320,11 @@ class ObsNode(Node):
             if not math.isfinite(value) or value <= 0.0 or value > maximum:
                 return f"resolved mission {name} outside operational range"
         if mission.contract_version == _POOL_MISSION_V1:
-            if mission.heading_mode not in {"straight", "align"}:
+            if mission.heading_mode not in {
+                "straight",
+                "align",
+                "takeoff_then_align",
+            }:
                 return "resolved mission heading_mode is not allowed"
         elif random_config is None:
             return "resolved mission v2 random metadata unavailable"
@@ -1934,7 +1952,10 @@ class ObsNode(Node):
         # 개선 1: 지금 추종 중인 웨이포인트 발행 — guidance.compute()가 위 build() 안에서
         # 이미 _wp_idx를 갱신했으므로 여기서 그 결과를 그대로 읽기만 하면 됨.
         idx = int(self.guidance._wp_idx[0].item())
-        target_wp = self.guidance._wp[0, (idx + 1) % self.guidance.num_wp]
+        _, next_waypoint = self.guidance._current_and_next(
+            self.guidance._wp_idx
+        )
+        target_wp = next_waypoint[0]
         self.pub_target_wp.publish(Float32MultiArray(data=target_wp.tolist()))
         self.pub_wp_idx.publish(Int32(data=idx))
         self.pub_mission_complete.publish(Bool(data=bool(self.guidance.mission_complete[0])))

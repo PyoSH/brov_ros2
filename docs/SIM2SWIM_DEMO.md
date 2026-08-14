@@ -44,13 +44,19 @@ Vision pose를 policy 입력에 추가하지 않는다. 학습된 16-D observati
 
 ## Case profile
 
-### Case A: position-v1 / align
+### Case A: position-v1 / takeoff_then_align
 
 - contract: `brov_pool_position_mission_v1`
-- pool waypoint: 정확히 2개
-- `heading_mode=align`, `loop=true`
+- pool waypoint: 정확히 3개
+- `P0→P1`: 일회성 level takeoff, `P1↔P2`: LOS align loop
+- 기본 takeoff 목표는 pool-frame `base_link z=0.70 m`
+- `heading_mode=takeoff_then_align`, `loop=true`
 - speed 0.10 m/s, lookahead 0.40 m, reach 0.15 m
-- 두 점 사이를 왕복하며 자동 종료가 없으므로 작업자가 정지한다.
+- 목표 높이에 도달한 뒤 두 수평점 사이를 왕복하며, 자동 종료가 없으므로 작업자가 정지한다.
+
+자동 경로의 보수적 기본 수평 길이는 0.20 m이다. `reach_threshold=0.15 m`보다
+충분히 긴 왕복을 눈으로 확인하려면 수조·tether 여유를 측량한 뒤 launch에
+`case_a_segment_length_m:=0.80`처럼 명시한다.
 
 기존 2.0 m 직선 실험을 수행하려면 첫 점 근처에 로봇을 놓고, 실제 pool bounds와
 선체·tether 여유를 확인한 두 절대점을 입력한다.
@@ -191,11 +197,11 @@ PREPARE는 최대 30초 동안 다음을 한 transaction으로 수행한다.
 
 1. 이미 유효한 pool localization이 없으면 neutral 확인 후 20개 정지 vision sample 수집
 2. full-SE(3) `pool→odom` one-shot 초기화
-3. 현재 pool pose를 safe box로 짧게 진입시킨 뒤 pool 중앙 방향 0.20 m의 Case-A 2점 경로 생성
+3. 현재 pose `P0`, 같은 x/y의 `z=0.70 m` takeoff점 `P1`, pool 중앙 방향 0.20 m 종점 `P2` 생성
 4. mission validate 및 immutable commit
 5. `/brov/prepare_control`과 preview 생성
 
-응답의 `success=True`와 확정된 두 pool point를 확인한다. 진행 상태는 다음 하나로 볼 수
+응답의 `success=True`와 확정된 세 pool point를 확인한다. 진행 상태는 다음 하나로 볼 수
 있다.
 
 ```bash
@@ -284,16 +290,19 @@ segment에 적용되는 순항 영역이다. 현재 pose 자체에는 이 bounds
 identity여야 한다. 아래 수치는 형식 예시다. 실제 로봇 위치와 당일 측량한 안전 경로로
 바꾸지 않고 그대로 사용하면 안 된다.
 
-Case A의 2점 pool 직선 예시:
+Case A의 3점 takeoff+왕복 예시. P0는 현재 pose 가까이, P1은 같은 x/y의
+`z=0.70`, P2는 수평 종점이다. loop는 P1과 P2 사이에서만 동작한다.
 
 ```bash
 ros2 topic pub --once /brov/mission/draft_path nav_msgs/msg/Path "{
   header: {frame_id: pool},
   poses: [
     {header: {frame_id: pool}, pose: {
-      position: {x: 0.80, y: 0.85, z: 0.40}, orientation: {w: 1.0}}},
+      position: {x: 0.80, y: 0.85, z: 0.20}, orientation: {w: 1.0}}},
     {header: {frame_id: pool}, pose: {
-      position: {x: 2.80, y: 0.85, z: 0.40}, orientation: {w: 1.0}}}
+      position: {x: 0.80, y: 0.85, z: 0.70}, orientation: {w: 1.0}}},
+    {header: {frame_id: pool}, pose: {
+      position: {x: 1.00, y: 0.85, z: 0.70}, orientation: {w: 1.0}}}
   ]
 }"
 ```
