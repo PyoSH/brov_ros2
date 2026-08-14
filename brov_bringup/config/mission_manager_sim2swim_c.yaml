@@ -1,0 +1,58 @@
+brov_mission_manager:
+  ros__parameters:
+    # Sim2Swim case C is the deterministic bounded random-attitude v2
+    # contract.  The launch wrapper refuses to select it without the explicit
+    # allow_case_c acknowledgement.
+    contract_version: brov_pool_position_mission_v2
+    pool_frame: pool
+    odom_frame: odom
+    base_frame: base_link
+    aligned_odometry_topic: /brov/localization/odometry_pool_with_alignment
+
+    # Draft orientations remain identity.  Random attitude targets are derived
+    # deterministically from the immutable canonical metadata below.
+    orientation_support_enabled: false
+    identity_orientation_tolerance: 0.001
+
+    # Authored waypoint centre/segment bounds only; the finite measured start
+    # may be just outside and its entry to waypoint 0 remains distance-gated.
+    # All-attitude hull/tether clearance is a separate physical acceptance
+    # requirement.
+    pool_safe_min_xyz: [0.35, 0.30, 0.20]
+    pool_safe_max_xyz: [3.65, 1.40, 0.90]
+    max_first_point_distance_m: 0.30
+    min_segment_length_m: 0.05
+    max_segment_length_m: 0.60
+    min_waypoints: 4
+    max_waypoints: 4
+
+    localization_max_age_s: 1.0
+    odometry_max_age_s: 0.5
+
+    cruise_speed: 0.05
+    lookahead_dist: 0.15
+    reach_threshold: 0.08
+    max_cruise_speed: 0.10
+    max_lookahead_dist: 0.30
+    max_reach_threshold: 0.15
+    heading_mode: random_at_waypoint
+    loop: true
+    allowed_heading_modes: [random_at_waypoint]
+
+    random_attitude_seed: 20260814
+    random_attitude_reference_frame: pool_zup_flu
+    random_attitude_generator_version: sha256_counter_uniform_rpy_v1
+    random_attitude_rpy_min_rad:
+      [-0.2617993877991494, -0.2617993877991494, -0.5235987755982988]
+    random_attitude_rpy_max_rad:
+      [0.2617993877991494, 0.2617993877991494, 0.5235987755982988]
+    # The generated target is immutable; the commanded target approaches it
+    # through the v2 consumer's shortest-path quaternion slew limiter.
+    random_attitude_max_slew_rate_rad_s: 0.17453292519943295
+    random_attitude_tolerance_rad: 0.17453292519943295
+    random_attitude_angular_speed_tolerance_rad_s: 0.08726646259971647
+    random_attitude_dwell_time_s: 1.0
+    # Either bound ends the mission.  One lap is four segments because the
+    # looping four-point route closes from its fourth point back to its first.
+    random_attitude_max_duration_s: 60.0
+    random_attitude_max_laps: 1

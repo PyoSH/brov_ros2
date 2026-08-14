@@ -141,6 +141,30 @@ The normal integrated run is:
 ros2 launch brov_bringup camera.launch.py aruco:=true
 ```
 
+## ArUco latest-frame processing backlog
+
+Pool one-shot initialization needs a fresh pose more than it needs every
+decoded frame. The current synchronous image callback can fall behind the
+camera stream and produce an old pose even while the camera decoder itself is
+running at the expected rate. The following changes are required before the
+vision path is treated as latency-robust:
+
+1. Use a `KEEP_LAST` image subscription with `depth=1` in the ArUco node.
+2. If a new image arrives while detection is running, discard queued older
+   images and process the newest available image next. Do not try to catch up
+   by processing every historical frame.
+3. When `/brov/aruco/debug_image` has no subscribers, skip debug annotation,
+   image conversion, and publication so that diagnostics do not consume pose
+   processing time.
+4. Keep `SUBPIX` as the accuracy-oriented mode, but allow the operator to use
+   `corner_refinement: NONE` temporarily during one-shot initialization when
+   measured processing latency prevents the freshness gate from passing. This
+   degraded mode must be followed by a pose-repeatability check.
+
+The acceptance criterion is based on the age and rate of
+`/brov/aruco/robot_pose_pool`, not only the camera decoder FPS. Raising the
+localizer message-age limit is not a substitute for latest-frame processing.
+
 Inspect the configured contract and output without enabling vehicle control:
 
 ```bash

@@ -1,4 +1,5 @@
-"""Full bringup with exactly one controller and optional camera/ArUco.
+"""
+Full bringup with exactly one controller and optional camera/ArUco.
 
 This launch never starts control services. The operator must inspect telemetry
 and explicitly call the relevant start services.
@@ -8,7 +9,12 @@ import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    GroupAction,
+    IncludeLaunchDescription,
+    OpaqueFunction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -52,6 +58,12 @@ def generate_launch_description() -> LaunchDescription:
         "connection": LaunchConfiguration("connection"),
         "send_pwm": LaunchConfiguration("send_pwm"),
         "arm": LaunchConfiguration("arm"),
+        "require_pool_localization": LaunchConfiguration(
+            "require_pool_localization"
+        ),
+        "require_resolved_mission": LaunchConfiguration(
+            "require_resolved_mission"
+        ),
     }
     controller = LaunchConfiguration("controller")
     camera = LaunchConfiguration("camera")
@@ -114,6 +126,22 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "arm", default_value="false", choices=["true", "false"]
+            ),
+            DeclareLaunchArgument(
+                "require_pool_localization",
+                default_value="false",
+                choices=["true", "false"],
+                description=(
+                    "Require a valid one-shot pool alignment before control."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "require_resolved_mission",
+                default_value="false",
+                choices=["true", "false"],
+                description=(
+                    "Require an immutable pool mission before control."
+                ),
             ),
             DeclareLaunchArgument(
                 "controller", default_value="model", choices=["model", "rl"]

@@ -13,7 +13,10 @@ brov_ros2/
 ├── brov_base/        MAVLink, observation, guidance, PWM gateway, vehicle model
 ├── brov_control/     model-based controller and TorchScript policy runtime
 ├── brov_perception/  BlueOS camera, checkerboard calibration, ArUco pose
-├── brov_viz/         pool geometry and raw vision-pose RViz visualization
+├── brov_interfaces/  typed localization and immutable mission contracts
+├── brov_localization/ one-shot full-SE(3) pool-to-odom alignment
+├── brov_mission/     pool-frame draft validation and odom mission resolution
+├── brov_viz/         pool, raw vision, and aligned odometry visualization
 ├── brov_bringup/     launch composition and mission configuration
 ├── artifacts/        versioned deployment artifacts and metadata
 ├── runtime/          writable calibration, rosbag, and log output
@@ -31,7 +34,7 @@ release되어야 하므로 하나의 Git repository와 tag로 관리한다.
 
 - Apple Silicon Mac
 - Docker Desktop
-- XQuartz (rqt/RViz 사용 시)
+- XQuartz (rqt 사용 시; 현재 macOS 경로의 RViz/OGRE는 qualified되지 않음)
 - BlueOS MAVLink/video endpoint가 Mac tether IP를 향하도록 설정
 
 현재 실기체에서 검증된 Docker Desktop network 설정:
@@ -62,8 +65,10 @@ APT의 `python3-torch`가 없다고 표시할 수 있다. 실제 환경 검증�
 
 ## Safe first launch
 
-모든 launch의 기본값은 `send_pwm=false`, `arm=false`다. 또한 launch는
-`/brov/start_control` 또는 controller start service를 자동 호출하지 않는다.
+모든 launch의 기본값은 `send_pwm=false`, `arm=false`다. `arm=true`는 명시적인
+`/brov/arm_control` 호출을 허용할 뿐 자동 arm 요청이 아니다. Launch는 tilt 확인,
+localization/mission transaction 또는 PREPARE/ARM/START service를 자동 호출하지 않는다.
+`pool_localized_demo.launch.py`의 optional RViz도 기본 `false`다.
 
 ```bash
 ros2 launch brov_bringup sim2real_demo.launch.py \
@@ -74,7 +79,9 @@ ros2 launch brov_bringup sim2real_demo.launch.py \
 ```
 
 실제 제어 절차는 [docs/DEMO_RUNBOOK.md](docs/DEMO_RUNBOOK.md)를 따른다.
-Sim2Swim case `a`/`c`의 수조 축소 미션, 배치 및 별도 안전 gate는
+Sim2Swim은 기존 case `a`/`c`의 `start_heading` mission과 16-D policy contract를
+유지하면서 AprilTag one-shot full-SE(3) pool pose 초기화를 control-start gate로
+사용한다. 수조 배치, 초기화 및 별도 안전 gate는
 [docs/SIM2SWIM_DEMO.md](docs/SIM2SWIM_DEMO.md)를 따른다.
 
 현재 추진기는 검증된 RCPassThru/`RC_CHANNELS_OVERRIDE` backend로 구동한다.
@@ -84,12 +91,14 @@ Sim2Swim case `a`/`c`의 수조 축소 미션, 배치 및 별도 안전 gate는
 해당 firmware와 interface가 전달되기 전에는 추측한 mode 코드를 추가하지 않는다.
 
 현재 raw ArUco pool pose는 `brov_viz`에서 수조/marker와 함께 RViz로 확인할 수
-있다. 향후 covariance 기반 절대 pose 초기화와 3-D waypoint 편집 방법은
+있다. one-shot full-SE(3) 절대 pose 초기화와 pool mission 운용 방법은
+[docs/POOL_LOCALIZATION_RUNBOOK.md](docs/POOL_LOCALIZATION_RUNBOOK.md)를 따른다.
+InteractiveMarker 기반 3-D waypoint 편집 및 continuous fusion의 후속 방법은
 [docs/RVIZ_POOL_LOCALIZATION_ROADMAP.md](docs/RVIZ_POOL_LOCALIZATION_ROADMAP.md)에
 기록한다. 3-D reconstruction과 NBV 시각화·실행 단계는
 [docs/NBV_RECONSTRUCTION_ROADMAP.md](docs/NBV_RECONSTRUCTION_ROADMAP.md)에
-분리해 기록한다. 현재 RViz 기능은 raw single-frame measurement의 검증용이며,
-localization fusion과 waypoint editor는 여전히 roadmap 범위다.
+분리해 기록한다. continuous localization fusion과 waypoint editor는 여전히
+roadmap 범위다.
 
 ## Packages and executables
 
@@ -107,6 +116,19 @@ brov_perception
   checkerboard_calibration_node
   aruco_pose_node
 
+brov_interfaces
+  OdometrySession.msg
+  AlignedOdometry.msg
+  LocalizationStatus.msg
+  ResolvedMission.msg
+  InitializePool.srv
+
+brov_localization
+  pool_alignment_node
+
+brov_mission
+  mission_manager_node
+
 brov_viz
   pool_scene_node
   pool_vision.launch.py
@@ -116,6 +138,7 @@ brov_bringup
   model_demo.launch.py
   rl_demo.launch.py
   camera.launch.py
+  pool_localized_demo.launch.py
   sim2real_demo.launch.py
   sim2swim_demo.launch.py
 ```
@@ -138,6 +161,7 @@ and wrench scaling.
 - Never run the model and RL PWM publishers simultaneously.
 - Start in shadow mode and inspect telemetry, observation, wrench, PWM preview, and actual
   servo output before enabling control.
+- Follow explicit PREPARE → ARM → START responses; `start_control` never performs arming.
 - Keep `/brov/estop` ready and ensure the vehicle is submerged with clear propellers.
 - A container or host crash can bypass Python cleanup; verify ArduSub arm state,
   `SERVO1..8_FUNCTION`, `RC7_OPTION`, and `RC8_OPTION` after abnormal termination.

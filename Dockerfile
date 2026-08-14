@@ -32,9 +32,12 @@ RUN apt-get update \
         ros-humble-geometry-msgs \
         ros-humble-image-proc \
         ros-humble-image-transport \
+        ros-humble-nav-msgs \
         ros-humble-rclpy \
+        ros-humble-rosidl-default-generators \
         ros-humble-sensor-msgs \
         ros-humble-std-msgs \
+        ros-humble-std-srvs \
         ros-humble-tf2-ros \
     && rm -rf /var/lib/apt/lists/*
 

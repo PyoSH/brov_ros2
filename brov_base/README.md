@@ -10,7 +10,16 @@ stack:
 - the guarded thruster-map diagnostic utility.
 
 The observation node is safe by default: `send_pwm` and `arm` both default to
-`false`, and control remains frozen until `/brov/start_control` is called.
+`false`. `arm=true` only permits an explicit `/brov/arm_control` request; node
+construction and `/brov/start_control` never arm the vehicle. A legacy relative
+mission uses ARM -> START. A committed pool mission uses PREPARE -> ARM -> START,
+with PREPARE loading a frozen preview before hardware arming.
+
+The node publishes `/brov/odometry/local_with_session`
+(`brov_interfaces/OdometrySession`) as the localization input. Each DDS sample
+atomically binds local odometry to its odometry-session identity. The standard
+`/brov/odometry/local` and latched `/brov/odometry/session_id` topics remain
+available for diagnostics only.
 
 ```bash
 ros2 run brov_base obs_node --ros-args \
@@ -18,6 +27,16 @@ ros2 run brov_base obs_node --ros-args \
   -p send_pwm:=false \
   -p arm:=false
 ```
+
+For hardware output, verify `success=True` after every applicable lifecycle
+service. Normal shutdown closes the output gate first and explicitly disarms:
+
+```bash
+ros2 service call /brov/stop_control std_srvs/srv/Trigger '{}'
+ros2 service call /brov/disarm_control std_srvs/srv/Trigger '{}'
+```
+
+`/brov/stop_control` sends neutral but does not replace the DISARM step.
 
 The diagnostic executable has an additional physical-spin interlock. Run its
 help before using it on hardware:

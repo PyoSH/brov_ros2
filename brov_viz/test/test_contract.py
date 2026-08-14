@@ -39,6 +39,7 @@ def test_rviz_is_pool_only_and_uses_expiring_vision_markers() -> None:
     }
     assert "/brov/viz/pool" in topics
     assert "/brov/viz/vision_robot" in topics
+    assert "/brov/viz/localized_robot" in topics
     assert "/brov/aruco/debug_image" in topics
     assert not any(
         display.get("Class")

@@ -25,7 +25,7 @@ setup(
     zip_safe=True,
     maintainer="Pyo Seunghyeon",
     maintainer_email="jeongmok99@koreatech.ac.kr",
-    description="Pool and raw vision-pose visualization for BlueROV2.",
+    description="Pool, raw vision, and aligned odometry visualization for BlueROV2.",
     license="Proprietary",
     entry_points={
         "console_scripts": [

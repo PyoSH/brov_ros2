@@ -1,139 +1,386 @@
-# Sim2Swim 실기체 데모 (case a/c)
+# Pool-localized Sim2Swim 실기체 데모
 
-이 데모는 `step_2_BROV/test_policy.py`의 두 실험을 현재 수조에 맞게 축소한다.
-
-- case `a`: `straight_line`, 2.0 m 직선 왕복, LOS 방향 자세 정렬
-- case `c`: `square_random_attitude`, 한 변 0.4 m 사각 경로, waypoint마다 무작위 자세
-
-두 미션 모두 `start_heading` frame과 시작 깊이 기준 `z=0`을 사용하며 계속
-순환한다. 첫 수중 시험용 속도는 case `a` 0.10 m/s, case `c` 0.05 m/s로
-제한했다. 두 case 모두 자동 시간·lap 종료가 없으므로 `/brov/stop_control` 또는
-비상 정지를 실행할 담당자가 운항 내내 대기해야 한다.
-
-## 수조 좌표와 배치
-
-사용 가능한 수조 크기는 길이(+X) 4.0 m, 너비(+Y) 1.7 m, 수심(+Z, NED) 1.1 m로
-가정한다. 아래 거리는 모두 **로봇 중심 기준**이다. 선체, 추진기, tether의 크기는
-포함하지 않으므로 실제 물과 장애물까지의 clearance를 별도로 확인해야 한다.
-
-`/brov/start_control`을 호출하는 순간의 로봇 위치가 `(0,0,0)`이 되고, 그 순간
-선수 방향이 +X가 된다. +Y는 우현 방향, NED의 +Z는 아래 방향이다. 시작 전에
-로봇 중심을 당일 측정한 실제 수심의 약 절반 깊이에 두면 waypoint의 `z=0`은 그
-시작 깊이를 유지한다. 명목 1.1 m만 믿지 말고 실제 수면-바닥 거리와 상·하
-clearance를 확인한다.
-
-### Case a 배치
-
-로봇 중심을 가까운 짧은 벽에서 1.00 m, 양쪽 긴 벽에서 각각 0.85 m 떨어진
-수조 중앙선에 놓고, 선수를 4.0 m 길이 방향의 반대편 짧은 벽으로 향하게 한다.
-waypoint 중심은 다음과 같다.
+이 데모는 AprilTag로 매 실행의 로봇 시작 위치와 자세를 수조에 정렬하고, 사용자가
+`pool` 절대좌표로 승인한 waypoint를 기존 TorchScript RL policy가 추종하게 한다.
+`sim2swim_demo.launch.py`는 검증된 `pool_localized_demo.launch.py`의 RL branch를
+재사용하며 다음 두 gate를 항상 켠다.
 
 ```text
-(0.0, 0.0, 0.0) <---- 왕복 ----> (2.0, 0.0, 0.0)
+require_pool_localization=true
+require_resolved_mission=true
 ```
 
-따라서 명령된 끝점 기준 종방향 벽 여유는 양쪽 1.00 m, 횡방향 여유는 양쪽
-0.85 m이다. 단, 각 끝점에서 `align` 목표가 즉시 180° 반전되며 자세 slew와
-자동 감속은 없으므로, 이 여유가 곧 안전거리라는 뜻은 아니다. 낮은 authority의
-구속 시험에서 회전 swept envelope와 최대 overshoot를 먼저 측정한다.
+Launch만으로 camera-neutral 확인, localization 초기화, route commit, PREPARE, arm 또는
+control start를 수행하지 않는다. `send_pwm=false`, `arm=false`가 기본값이다.
 
-### Case c 배치
-
-정사각형을 수조 중앙에 놓는다. 로봇 중심을 가까운 짧은 벽에서 1.80 m,
-수조 횡방향 중심선보다 `-Y` 방향으로 0.20 m 떨어진 곳(즉 `-Y`측 긴 벽에서
-0.65 m)에 놓고, 선수를 +X 길이 방향으로 향하게 한다. +Y(우현)가 수조
-횡방향 중심을 향하는지 반드시 확인한다.
+## 좌표계와 observation 계약
 
 ```text
-(0.0, 0.4) <---------------- (0.4, 0.4)
-     |                             ^
-     v                             |
-(0.0, 0.0) ----------------> (0.4, 0.0)
+pool (측량된 고정 Z-up frame: +X 먼 벽, +Y 좌측, +Z 위)
+└── odom (현재 autopilot/DVL session의 연속 Z-up frame)
+    └── base_link (FLU: +X 전방, +Y 좌측, +Z 위)
 ```
 
-명령된 square 중심은 수조 중앙이며, waypoint 중심 기준 여유는 종방향 양쪽
-1.80 m, 횡방향 양쪽 0.65 m이다.
+정지 상태에서 같은 시각의 vision과 local odometry를 사용해 다음 full-SE(3)를 한 번
+계산하고 현재 odometry session 동안 고정한다.
 
-### Case c 안전 승인 gate
+```text
+pool_T_odom = pool_T_base,vision * inverse(odom_T_base,mav)
+```
 
-**경고:** case `c`는 roll/pitch 최대 ±90°, yaw 최대 ±180°의 목표를 waypoint마다
-새로 만든다. 현재 policy 출력에는 실기체용 torque/PWM authority cap과 slew-rate
-제한이 없고, `loop=true`에는 자동 시간·lap 종료도 없다. 아래 항목이 모두 구현·시험·
-승인되기 전에는 **case c를 수중에서 실행할 수 없다**.
+사용자가 발행하는 `nav_msgs/Path`는 `pool` Z-up 절대좌표다. Mission manager는 승인
+시점의 정확한 `pool_T_odom`, localization epoch, odometry session과 `alignment_id`에
+경로를 결합하고 `odom`으로 한 번 resolve한다. PREPARE에서 `obs_node`가 그 불변
+경로를 기존 내부 `start_heading` guidance 표현으로 바꾼다.
 
-- 실제 수심에서 all-attitude swept envelope와 tether clearance 측정
-- 구속 상태에서 단일 축·작은 각도부터 증가시키는 단계별 자세 시험
-- 실기체 torque/PWM authority cap과 slew-rate 제한 구현 및 검증
-- `/brov/debug/q_desired_zup`으로 첫 목표 자세를 확인하고 승인하는 절차
-- 최대 운항 시간 또는 lap 수에 따른 자동 종료와 비상 정지 담당자 지정
+Vision pose를 policy 입력에 추가하지 않는다. 학습된 16-D observation은 그대로다.
 
-첫 무작위 목표 자세는 shadow mode에서 생성되어 `/brov/debug/q_desired_zup`으로
-발행되며, `/brov/start_control`을 호출해도 다시 sample하지 않고 유지된다. 다만 이후
-각 waypoint 도달 시의 무작위 자세 step은 여전히 slew 제한 없이 바뀐다.
-`allow_case_c:=true`는 이 위험을 읽고 인지했다는 명시적 opt-in일 뿐, 그 자체가
-수중 운항 승인은 아니다.
+```text
+[q_error_wxyz(4), velocity_error_body(3), angular_velocity(3),
+ velocity_error_integral(3), quaternion_vector_error_integral(3)]
+```
 
-## 실행 전 확인
+따라서 새 observation 버전이나 policy 재학습 없이 수조 절대 경로를 사용할 수 있다.
 
-실제 제어 전에 별도 터미널에 아래 비상 정지 명령을 입력해 두되, 실행(Enter)은
-비상시에만 한다. `obs_node` 실행 전에 발행한 메시지는 latch되지 않는다.
+## Case profile
+
+### Case A: position-v1 / align
+
+- contract: `brov_pool_position_mission_v1`
+- pool waypoint: 정확히 2개
+- `heading_mode=align`, `loop=true`
+- speed 0.10 m/s, lookahead 0.40 m, reach 0.15 m
+- 두 점 사이를 왕복하며 자동 종료가 없으므로 작업자가 정지한다.
+
+기존 2.0 m 직선 실험을 수행하려면 첫 점 근처에 로봇을 놓고, 실제 pool bounds와
+선체·tether 여유를 확인한 두 절대점을 입력한다.
+
+### Case C: deterministic random-attitude-v2
+
+- contract: `brov_pool_position_mission_v2`
+- pool waypoint: 정확히 4개, 마지막 점에서 첫 점으로 닫히는 loop
+- `heading_mode=random_at_waypoint`, `loop=true`
+- speed 0.05 m/s, lookahead 0.15 m, reach 0.08 m
+- deterministic seed와 exact generator contract
+- shortest-path attitude slew 최대 0.174533 rad/s (10 deg/s)
+- 자세/각속도 tolerance 안에서 1.0 s dwell 후 waypoint event 승인
+- 1 lap 또는 active 60 s 중 먼저 도달한 조건에서 정상 control 종료
+- policy action limit `[0.25, 0.25, 0.30, 0.15, 0.15, 0.15]`
+- normalized PWM 절댓값 0.35, policy 변화율 0.40/s
+
+V2 canonical plan에는 다음 metadata가 포함되며 전체가 mission hash에 들어간다.
+
+```text
+reference_frame = pool_zup_flu
+generator_version = sha256_counter_uniform_rpy_v1
+rpy bounds = roll/pitch ±0.261799 rad (15 deg), yaw ±0.523599 rad (30 deg)
+```
+
+같은 committed mission을 다시 PREPARE해도 random target sequence는 바뀌지 않는다.
+새 sequence는 새 draft/commit transaction으로만 만든다.
+이것은 legacy full-range(roll/pitch ±90 deg, yaw ±180 deg) 실험이 아닌 첫 수중
+단계시험용 envelope다. 범위와 slew rate 확대는 구속 단일축 시험 결과를 검토한 뒤
+별도 config 변경으로만 수행한다.
+
+Generator의 바이트 수준 규약은 다음과 같다. 각 event와 축에 대해 trailing newline
+없이 ASCII
+`sha256_counter_uniform_rpy_v1:{seed}:{event_index}:{axis_index}`를 SHA-256
+처리하고, digest의 첫 8 bytes를 unsigned big-endian 정수로 읽어 `2^64`로 나눈다.
+각 placeholder는 `+` 기호와 zero padding이 없는 unsigned base-10 정수 문자열이다.
+축 `0/1/2`는 각각 roll/pitch/yaw이며, `min + u * (max - min)`으로 bound에
+사상한다. 이후 `Rz(yaw) Ry(pitch) Rx(roll)` ZYX Euler 조합을 정규화된
+`[w,x,y,z]` quaternion으로 바꾸고, `w < 0`일 때만 전체 부호를 뒤집는다.
+
+다음 값은 generator 정합성 검사용 legacy full-range golden vector이며, 위의 좁은
+Case C 운용 bound에서 실제 생성되는 목표와는 다르다.
+
+```text
+seed=20260814, event_index=0
+q_wxyz=[0.36995846, 0.15418720, 0.61874908, -0.67565274]
+```
+
+payload 문자, byte order, 축 순서, Euler 규약 또는 quaternion canonicalization을
+바꾸려면 기존 version을 재해석하지 말고 새 `generator_version`을 정의해야 한다.
+
+`case:=c`는 기본적으로 launch 단계에서 거부된다. `allow_case_c:=true`는 위험 profile을
+구성해도 된다는 명시적 확인이지 물속 운항 승인 자체가 아니다. 현재 waypoint bounds는
+로봇 중심만 검사하므로 다음 조건을 별도로 만족해야 한다.
+
+- 모든 허용 자세에서 선체/추진기 swept volume과 수면·바닥·벽 여유 검증
+- tether 걸림과 DVL bottom-lock 상실 가능성 검증
+- 추진기 분리 및 구속 상태에서 낮은 자세 범위/authority부터 단계 시험
+- 현장 estop 담당자와 QGroundControl disarm 담당자 지정
+
+Case C launch는 위 operational envelope가 들어 있는 전용 RL config를 자동 선택한다.
+또한 일반 bootstrap의 legacy random target 대신 1 cm straight/no-loop benign bootstrap을
+사용하며, PREPARE에서만 committed v2 settings로 교체한다. 전용 gateway safety config도
+PWM 절댓값 0.35와 gateway 변화율 0.50/s를 독립적으로 재검사한다. Policy의 실제
+slew limiter는 더 엄격한 0.40/s라 정상 DDS/timer jitter가 같은 수치의 경계에서
+false trip을 만들지 않게 margin을 둔다. 일반 `safety.yaml`이나
+`rl_controller.yaml`로 바꾸거나 limit을 키워 이 gate를 우회하지 않는다.
+Envelope 확대는 기록된 단계시험 결과와 시험 책임자 승인이 있는 별도 변경이다.
+
+## 1. 빌드와 환경
 
 ```bash
 cd /workspace/brov_ros2
+colcon build --symlink-install --packages-select \
+  brov_interfaces brov_base brov_control brov_perception \
+  brov_localization brov_mission brov_viz brov_bringup
+source install/setup.bash
+```
+
+Policy artifact를 지정한다.
+
+```bash
+export BROV_POLICY_PATH=/workspace/brov_ros2/artifacts/policies/demo_policy/policy.pt
+```
+
+다른 launch와 camera receiver가 남아 있지 않은지 확인한다. 실제 구동 전에는 estop
+명령을 별도 터미널에 입력해 두고 Enter만 남겨 둔다.
+
+```bash
 ros2 topic pub --once /brov/estop std_msgs/msg/Empty "{}"
 ```
 
-추진기와 tether를 정리하고, DVL/ExternalNav 및 `LOCAL_POSITION_NED` 상태를
-확인한다. 먼저 case별 shadow mode를 실행한다. 이 launch는 RL controller와
-camera를 구성하지만 `/brov/start_control`을 자동 호출하지 않으며, 기본값으로
-PWM 송신과 arm을 모두 끈다.
+## 2. Shadow launch
+
+먼저 실제 PWM과 ROS arm 권한을 모두 끈다.
 
 ```bash
-# case a
+# Case A
 ros2 launch brov_bringup sim2swim_demo.launch.py \
-  case:=a send_pwm:=false arm:=false
-
-# case c 구성 검토 전용(현재 수중 제어 금지)
-ros2 launch brov_bringup sim2swim_demo.launch.py \
-  case:=c allow_case_c:=true send_pwm:=false arm:=false
+  case:=a \
+  connection:=udpout:192.168.2.2:14550 \
+  send_pwm:=false \
+  arm:=false \
+  rviz:=false
 ```
 
-새 터미널에서 구성과 신호를 확인한다.
+Case C는 안전 acceptance 작업 중에도 explicit opt-in이 필요하다.
 
 ```bash
-cd /workspace/brov_ros2
-ros2 param get /brov_obs_node waypoints
-ros2 param get /brov_obs_node waypoint_min_xyz
-ros2 param get /brov_obs_node waypoint_max_xyz
-ros2 topic echo --once /brov/control_active
-ros2 topic echo --once /brov/debug/pos_mission
-ros2 topic echo --once /brov/debug/q_desired_zup
+ros2 launch brov_bringup sim2swim_demo.launch.py \
+  case:=c \
+  allow_case_c:=true \
+  connection:=udpout:192.168.2.2:14550 \
+  send_pwm:=false \
+  arm:=false \
+  rviz:=false
+```
+
+두 case 모두 camera, AprilTag, localizer, mission manager, `obs_node`와 RL policy를
+정확히 하나씩 실행한다. RViz가 필요한 Linux display 환경에서만 `rviz:=true`를
+사용한다.
+
+### Case A 간소화된 운영 경로
+
+Case A의 정상 데모에서는 내부 localization/mission/control 서비스를 하나씩 직접
+호출하지 않는다. `brov_demo_orchestrator`가 기존 fail-closed 서비스를 순서대로
+호출하며, launch 자체는 어떤 서비스도 자동 호출하지 않는다.
+
+로봇이 disarm·정지 상태이고, camera가 물리적으로 보정된 neutral이며 tag 2가 깨끗하게
+보이는 것을 확인한 뒤 다음을 호출한다. 이 PREPARE 호출 자체가 camera neutral에 대한
+작업자의 명시적 확인이다.
+
+```bash
+ros2 service call /brov/demo/prepare std_srvs/srv/Trigger "{}"
+```
+
+PREPARE는 최대 30초 동안 다음을 한 transaction으로 수행한다.
+
+1. 이미 유효한 pool localization이 없으면 neutral 확인 후 20개 정지 vision sample 수집
+2. full-SE(3) `pool→odom` one-shot 초기화
+3. 현재 pool pose를 safe box로 짧게 진입시킨 뒤 pool 중앙 방향 0.20 m의 Case-A 2점 경로 생성
+4. mission validate 및 immutable commit
+5. `/brov/prepare_control`과 preview 생성
+
+응답의 `success=True`와 확정된 두 pool point를 확인한다. 진행 상태는 다음 하나로 볼 수
+있다.
+
+```bash
+ros2 topic echo --once --qos-durability transient_local /brov/demo/status
+```
+
+Shadow profile(`send_pwm:=false arm:=false`)에서는 여기까지만 수행한다. 실제 출력이
+허용된 profile에서는 preview, 수조 여유, tether와 추진기 주변을 확인한 후 다음 한 번만
+호출한다.
+
+```bash
+ros2 service call /brov/demo/start std_srvs/srv/Trigger "{}"
+```
+
+START는 ARM→base START를 수행하고 RL의 첫 post-START PWM을 확인한 뒤에만 성공한다.
+중간 실패 시 base STOP과 DISARM을 시도하고 실패 원인을 응답에 남긴다. 정상 종료는
+다음 하나다.
+
+```bash
+ros2 service call /brov/demo/stop std_srvs/srv/Trigger "{}"
+```
+
+STOP은 output gate를 먼저 닫고 DISARM한다. estop은 이 orchestration에 포함시키지 않으며
+기존 `/brov/estop` latch를 독립적으로 유지한다. Case C는 아직 이 자동 경로를 사용하지
+않고 아래의 명시적 staged 절차를 따른다.
+
+## 3. Camera neutral과 one-shot 초기화
+
+로봇을 완전히 정지시키고 camera tilt를 calibration 때의 neutral에 물리적으로
+고정한다. Raw measurement와 atomic odometry session을 확인한다.
+
+```bash
+ros2 topic echo --once /brov/aruco/robot_pose_pool
+ros2 topic echo --once /brov/odometry/local_with_session
+```
+
+물리 상태를 확인한 작업자가 neutral을 승인한다. 이 서비스는 camera를 움직이지 않으며
+호출 전 sample을 모두 폐기한다.
+
+```bash
+ros2 service call /brov/localization/confirm_camera_tilt_neutral \
+  std_srvs/srv/Trigger "{}"
+```
+
+```bash
+ros2 topic echo --qos-durability transient_local \
+  /brov/localization/status
+```
+
+`state=COLLECTING`이고 configured minimum 이상 sample이 쌓이면 초기화한다.
+
+```bash
+ros2 service call /brov/localization/initialize_pool \
+  brov_interfaces/srv/InitializePool "{min_samples: 0}"
+```
+
+다음을 모두 확인한다.
+
+- service `success=True`
+- `state=INITIALIZED`, `output_valid=true`, `epoch>0`
+- non-empty `odometry_session_id`와 `alignment_id`
+- 실제 배치와 일치하는 pool 위치·자세
+
+```bash
+ros2 topic echo --once --qos-durability transient_local \
+  /brov/localization/status
+ros2 topic echo --once --qos-profile sensor_data \
+  /brov/localization/odometry_pool
+ros2 run tf2_ros tf2_echo pool base_link
+```
+
+값이 실제 측정과 맞지 않으면 진행하지 않고 marker survey, camera extrinsic과 축 정의를
+수정한 뒤 새 session에서 다시 초기화한다.
+
+## 4. Pool waypoint draft
+
+`pool_safe_min_xyz`/`pool_safe_max_xyz`는 waypoint 중심과 waypoint 사이의 직선
+segment에 적용되는 순항 영역이다. 현재 pose 자체에는 이 bounds를 적용하지 않는다.
+따라서 로봇이 바닥에 있어 현재 `z=0.1756 m`처럼 최소 waypoint 높이 `0.20 m`보다
+조금 낮아도 정상이다. 첫 waypoint를 현재 x/y와 같은 `z=0.20 m` 지점으로 두면 약
+`0.0244 m`의 짧은 진입 경로가 된다.
+
+현재 pose는 유한한 XYZ여야 하고, 첫 waypoint는 safe box 안이면서 현재
+`/brov/localization/odometry_pool` 위치에서 0.30 m 이내여야 한다. 그러므로 바닥 시작을
+허용해도 임의의 먼 경로로 건너뛰는 것은 계속 거부된다. 모든 waypoint quaternion은
+identity여야 한다. 아래 수치는 형식 예시다. 실제 로봇 위치와 당일 측량한 안전 경로로
+바꾸지 않고 그대로 사용하면 안 된다.
+
+Case A의 2점 pool 직선 예시:
+
+```bash
+ros2 topic pub --once /brov/mission/draft_path nav_msgs/msg/Path "{
+  header: {frame_id: pool},
+  poses: [
+    {header: {frame_id: pool}, pose: {
+      position: {x: 0.80, y: 0.85, z: 0.40}, orientation: {w: 1.0}}},
+    {header: {frame_id: pool}, pose: {
+      position: {x: 2.80, y: 0.85, z: 0.40}, orientation: {w: 1.0}}}
+  ]
+}"
+```
+
+Case C의 4점 pool square 예시:
+
+```bash
+ros2 topic pub --once /brov/mission/draft_path nav_msgs/msg/Path "{
+  header: {frame_id: pool},
+  poses: [
+    {header: {frame_id: pool}, pose: {
+      position: {x: 1.80, y: 0.65, z: 0.40}, orientation: {w: 1.0}}},
+    {header: {frame_id: pool}, pose: {
+      position: {x: 2.20, y: 0.65, z: 0.40}, orientation: {w: 1.0}}},
+    {header: {frame_id: pool}, pose: {
+      position: {x: 2.20, y: 1.05, z: 0.40}, orientation: {w: 1.0}}},
+    {header: {frame_id: pool}, pose: {
+      position: {x: 1.80, y: 1.05, z: 0.40}, orientation: {w: 1.0}}}
+  ]
+}"
+```
+
+`loop=true`이면 manager가 네 번째 점에서 첫 번째 점으로 닫히는 segment도 검사한다.
+따라서 첫 점은 5번째 pose로 반복하지 않는다. 반복하면 zero-length closing segment로
+검증이 거부된다.
+
+Manager는 정확히 4점인지, bounds와 모든 closing segment 길이는 검증하지만 직교성과
+네 변의 동일 길이까지 판정하지 않는다. 원래 Case C square를 재현할 때는 작업자가
+측량한 pool 좌표로 정사각형을 정의하고 commit 전에 형상을 별도로 확인한다.
+
+## 5. Validate, commit, PREPARE
+
+Draft와 현재 alignment를 검증하고 immutable mission으로 commit한다.
+
+```bash
+ros2 service call /brov/mission/validate std_srvs/srv/Trigger "{}"
+ros2 service call /brov/mission/commit std_srvs/srv/Trigger "{}"
+```
+
+두 응답 모두 `success=True`여야 한다. 다음 출력에서 pool path, resolved odom path,
+contract version, plan hash, epoch/session/alignment가 일치하는지 확인한다.
+
+```bash
+ros2 topic echo --once --qos-durability transient_local \
+  /brov/mission/active_path_pool
+ros2 topic echo --once --qos-durability transient_local \
+  /brov/mission/resolved_path_odom
+ros2 topic echo --once --qos-durability transient_local \
+  /brov/mission/resolved
+```
+
+출력을 frozen 상태로 둔 채 resolved guidance를 로드한다.
+
+```bash
+ros2 service call /brov/prepare_control std_srvs/srv/Trigger "{}"
+```
+
+PREPARE 성공 후 실제 pool path 방향과 policy preview를 확인한다.
+
+```bash
 ros2 topic echo --once /brov/target_waypoint
+ros2 topic echo --once /brov/debug/q_desired_zup
+ros2 topic echo --once /brov/policy/thruster_pwm_preview
 ros2 topic hz /brov/observation
-ros2 topic hz /brov/camera/image_raw
 ```
 
-`allow_case_c` 기본값은 `false`다. 이 값을 명시하지 않고 case `c`를 선택하면
-노드와 hardware 연결을 만들기 전에 launch가 실패한다.
+Case C에서는 PREPARE를 다시 호출해도 committed deterministic target이 같아야 한다.
+Target, path, vehicle clearance 또는 PWM sign이 예상과 다르면 ARM하지 않는다.
 
-`control_active`가 `false`이고 waypoint/bounds가 선택한 case와 정확히 같아야 한다.
-로봇을 손으로 +X와 +Y 방향으로 조금씩 움직여 `/brov/debug/pos_mission`의 축과
-부호도 확인한다.
+## 6. 실제 제어
 
-## 실제 제어
-
-shadow launch를 완전히 종료한 뒤 case `a`를 다시 실행한다.
+Shadow launch를 완전히 종료한 뒤 실제 profile을 다시 실행한다. 새 `obs_node` 실행은
+새 odometry session이므로 neutral 확인 → initialize → 새 draft → validate → commit →
+PREPARE를 전부 다시 수행해야 한다.
 
 ```bash
+# Case A actual profile
 ros2 launch brov_bringup sim2swim_demo.launch.py \
   case:=a \
   connection:=udpout:192.168.2.2:14550 \
   send_pwm:=true \
-  arm:=true
+  arm:=true \
+  rviz:=false
 ```
 
-case `c`는 위의 안전 승인 gate가 모두 충족되고 시험 책임자가 승인한 뒤에만 다음
-명령을 사용할 수 있다. `allow_case_c:=true`를 붙였다는 사실만으로 실행하면 안 된다.
+Case C는 위의 물리 acceptance가 완료되고 시험 책임자가 승인한 경우에만 다음 profile을
+사용한다.
 
 ```bash
 ros2 launch brov_bringup sim2swim_demo.launch.py \
@@ -141,27 +388,60 @@ ros2 launch brov_bringup sim2swim_demo.launch.py \
   allow_case_c:=true \
   connection:=udpout:192.168.2.2:14550 \
   send_pwm:=true \
-  arm:=true
+  arm:=true \
+  rviz:=false
 ```
 
-telemetry, 시작 위치와 방향, 비상 정지 준비 상태를 마지막으로 확인한 뒤 제어를
-명시적으로 시작한다. RL controller에는 별도 start service가 없다.
+현재 ArduSub mode가 MANUAL이고 heartbeat/DVL/EKF가 정상인지 확인한다. 실제 PWM
+publisher는 선택된 RL policy 하나여야 한다.
 
 ```bash
+ros2 topic info /brov/thruster_pwm --verbose
+```
+
+다시 수행한 PREPARE까지 성공했다면 다음 순서로만 출력 gate를 연다.
+
+```bash
+ros2 service call /brov/arm_control std_srvs/srv/Trigger "{}"
 ros2 service call /brov/start_control std_srvs/srv/Trigger "{}"
 ```
 
-정상 정지는 다음 순서로 수행한다.
+RL policy는 `/brov/control_active=true` 이후 다음 fresh observation부터 PWM을
+발행하므로 별도 controller-start service가 없다. ARM 후 8 s 안에 START해야 하며,
+START 후 첫 PWM과 이후 watchdog을 통과해야 한다.
+
+```bash
+ros2 topic echo --once /brov/control_active
+ros2 topic hz /brov/thruster_pwm
+```
+
+Case A는 작업자가 종료한다. Case C v2는 1 lap 또는 60 s에서 먼저 충족된 조건으로
+control gate를 닫고 neutral/disarm하는 정상 완료 lifecycle을 사용한다. 자동 완료를
+기다리는 동안에도 estop 담당자는 계속 대기한다.
+
+정상 수동 종료는 다음 순서다.
 
 ```bash
 ros2 service call /brov/stop_control std_srvs/srv/Trigger "{}"
-# success=True 확인 후 launch 터미널에서 Ctrl-C
+ros2 service call /brov/disarm_control std_srvs/srv/Trigger "{}"
 ```
 
-## Bounds의 한계
+STOP은 PWM gate를 닫고 neutral을 보내지만 hardware disarm을 대신하지 않는다.
 
-`waypoint_bounds_enabled`, `waypoint_min_xyz`, `waypoint_max_xyz`는 launch 시
-**입력된 waypoint가 허용 범위 안인지** 확인해 잘못된 미션을 거부한다. 로봇의
-실측 위치를 감시하거나 벽에 접근했을 때 자동 정지/복귀시키는 runtime geofence가
-아니다. 관성, 외란, corner cutting, 자세 변화, 위치추정 오차로 선체가 waypoint
-box 밖으로 나갈 수 있으므로 작업자가 항상 비상 정지를 담당해야 한다.
+## Invalidation과 한계
+
+다음 변화는 기존 alignment와 committed mission을 무효화한다.
+
+- `obs_node`, autopilot/DVL 또는 localizer 재시작
+- MAVLink boot-time reset 또는 navigation discontinuity
+- localization epoch/session/`alignment_id` 변경
+- camera tilt 이동 또는 camera/marker survey 변경
+
+새 session에서는 모든 one-shot 승인 절차를 반복한다. Case C fault 또는 수동 stop 후
+자동으로 다시 arm/start하지 않는다.
+
+Vision은 시작 정렬에만 사용되고 continuous fusion은 수행하지 않는다. 초기화 후
+marker가 사라져도 frozen `pool -> odom`과 DVL/IMU로 경로를 계산하지만 장기 drift는
+보정하지 않는다. Camera timestamp도 exposure time이 아닌 decode 측 ROS time이므로
+초기화는 반드시 정지 상태에서 수행한다. Waypoint bounds는 center-point 입력 검사일
+뿐 runtime hull/tether geofence가 아니다.

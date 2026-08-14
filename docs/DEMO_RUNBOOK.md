@@ -43,6 +43,29 @@ ros2 topic echo --once /brov/model_based/thruster_pwm_preview
 ros2 topic hz /brov/camera/image_raw
 ```
 
+RL shadow launch에서는 model preview 대신 아래를 확인한다. policy preview는
+항상 계산되지만 base START 전에는 policy node가 실제 PWM topic을 발행하지 않는다.
+
+```bash
+ros2 topic echo --once /brov/action
+ros2 topic echo --once /brov/policy/thruster_pwm_preview
+```
+
+수조 좌표의 절대 위치·자세 초기화와 pool waypoint를 사용하는 데모는 위의 legacy
+launch 대신 다음 fail-closed profile을 사용한다.
+
+```bash
+ros2 launch brov_bringup pool_localized_demo.launch.py \
+  controller:=model send_pwm:=false arm:=false
+```
+
+이 profile은 camera+AprilTag, one-shot localization, mission manager와 정확히 한
+controller를 구성하지만 tilt confirm, initialize, validate, commit, prepare, arm 또는
+start를 자동 호출하지 않는다. Optional visualization은 `rviz:=true`로만 포함되며
+기본값은 `false`다.
+새 session마다 수행할 전체 순서는
+[POOL_LOCALIZATION_RUNBOOK.md](POOL_LOCALIZATION_RUNBOOK.md)를 따른다.
+
 ## 4. Model-based control
 
 After shadow-mode inspection, restart the launch in a safe water-test setup:
@@ -53,14 +76,18 @@ ros2 launch brov_bringup model_demo.launch.py \
   send_pwm:=true arm:=true
 ```
 
-The launch only prepares the nodes. Start control explicitly:
+`arm=true` permits explicit ROS arming but does not arm during launch. This
+legacy relative-mission profile has no committed pool mission to PREPARE, so
+explicitly ARM then START and check `success=True` after every response:
 
 ```bash
+ros2 service call /brov/arm_control std_srvs/srv/Trigger "{}"
 ros2 service call /brov/start_control std_srvs/srv/Trigger "{}"
 ros2 service call /brov/model_based/start std_srvs/srv/Trigger "{}"
 ```
 
-Both responses must return `success=True`.
+ARM rechecks gates and sends neutral before arming. START opens the control gate
+but never arms. The full pool-localized profile adds PREPARE before these steps.
 
 ## 5. RL control
 
@@ -72,10 +99,14 @@ ros2 launch brov_bringup rl_demo.launch.py \
   send_pwm:=true arm:=true
 ```
 
-The policy path defaults to `BROV_POLICY_PATH` in Docker. RL has no separate controller
-start service; open only the observation/PWM gate:
+The policy path defaults to `BROV_POLICY_PATH` in Docker. RL has no separate
+controller start service, but the legacy ARM → START lifecycle is still required.
+The node starts with output disabled, keeps publishing
+`/brov/policy/thruster_pwm_preview`, and forwards to `/brov/thruster_pwm` only
+after `/brov/control_active=true`:
 
 ```bash
+ros2 service call /brov/arm_control std_srvs/srv/Trigger "{}"
 ros2 service call /brov/start_control std_srvs/srv/Trigger "{}"
 ```
 
@@ -152,16 +183,17 @@ OGRE/OpenGL renderer; use the headless validation below until a dedicated
 viewer bridge is provided.
 
 The RViz fixed frame is `pool`. It displays the nominal 4.0 x 1.7 x 1.1 m
-pool, the surveyed 420 mm tag, and a translucent raw-vision robot proxy with
-FLU axes. The proxy is magenta inside the nominal pool, red outside it, and is
-deleted when `/brov/aruco/visible` becomes false or no new pose arrives for
-0.5 s. The AprilTag debug image is shown in the same RViz window.
+pool, the surveyed 420 mm tag, a translucent magenta raw-vision robot proxy and
+a blue one-shot-aligned odometry proxy with FLU axes. An out-of-pool proxy is
+red, and each robot proxy is deleted when its input becomes stale. The AprilTag
+debug image is shown in the same RViz window.
 
 This launch starts no camera, controller, MAVLink owner, TF broadcaster, arm,
-or control service. It uses RViz's Identity transformer only for messages that
-already have `frame_id=pool`; do not add other-frame displays to this temporary
-configuration. The final localization design will replace it with the
-canonical `pool -> odom -> base_link` TF chain.
+or control service. The canonical `pool -> odom -> base_link` ownership chain
+is implemented by `brov_localization` and `brov_base`; this visualization node
+only converts their existing pool-frame measurements into RViz markers. The
+current RViz config uses the Identity transformer for those already-pool-frame
+markers, so do not add untransformed data from other frames.
 
 Headless topic validation is also available:
 
@@ -169,6 +201,7 @@ Headless topic validation is also available:
 ros2 launch brov_viz pool_vision.launch.py rviz:=false
 ros2 topic echo --once /brov/viz/pool
 ros2 topic echo --once /brov/viz/vision_robot
+ros2 topic echo --once /brov/viz/localized_robot
 ```
 
 ## 8. Normal stop
@@ -176,15 +209,18 @@ ros2 topic echo --once /brov/viz/vision_robot
 Model controller:
 
 ```bash
-ros2 service call /brov/model_based/stop std_srvs/srv/Trigger "{}"
 ros2 service call /brov/stop_control std_srvs/srv/Trigger "{}"
+ros2 service call /brov/model_based/stop std_srvs/srv/Trigger "{}"
+ros2 service call /brov/disarm_control std_srvs/srv/Trigger "{}"
 ```
 
 RL controller:
 
 ```bash
 ros2 service call /brov/stop_control std_srvs/srv/Trigger "{}"
+ros2 service call /brov/disarm_control std_srvs/srv/Trigger "{}"
 ```
 
-Stop the controller first and `obs_node` last so normal cleanup can disarm, release RC
-override, and restore servo/camera parameters.
+Close the PWM gate first, stop the controller publisher, then explicitly disarm.
+Terminate `obs_node` last so cleanup can release RC override and restore
+servo/camera parameters.

@@ -26,4 +26,10 @@ setup(
     maintainer_email="jeongmok99@koreatech.ac.kr",
     description="Launch composition for BlueROV2 sim-to-real experiments.",
     license="Proprietary",
+    entry_points={
+        "console_scripts": [
+            "demo_orchestrator_node = "
+            "brov_bringup.demo_orchestrator_node:main",
+        ],
+    },
 )

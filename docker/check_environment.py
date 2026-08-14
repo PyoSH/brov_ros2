@@ -33,9 +33,10 @@ def main() -> int:
     failed = False
     for name in (
         "torch", "yaml", "pymavlink", "rclpy", "std_msgs", "sensor_msgs",
-        "geometry_msgs", "visualization_msgs", "cv_bridge", "cv2", "gi",
-        "brov_base", "brov_control", "brov_perception", "brov_viz",
-        "brov_bringup",
+        "geometry_msgs", "nav_msgs", "std_srvs", "visualization_msgs",
+        "cv_bridge", "cv2", "gi", "brov_interfaces", "brov_base",
+        "brov_control", "brov_perception", "brov_localization",
+        "brov_mission", "brov_viz", "brov_bringup",
     ):
         try:
             module = importlib.import_module(name)
@@ -79,8 +80,9 @@ def main() -> int:
         from ament_index_python.packages import get_package_prefix
 
         for package in (
-            "brov_base", "brov_control", "brov_perception", "brov_viz",
-            "brov_bringup"
+            "brov_interfaces", "brov_base", "brov_control",
+            "brov_perception", "brov_localization", "brov_mission",
+            "brov_viz", "brov_bringup",
         ):
             print(f"[OK] ROS package {package}: {get_package_prefix(package)}")
     except Exception as exc:

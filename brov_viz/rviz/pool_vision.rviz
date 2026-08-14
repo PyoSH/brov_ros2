@@ -7,6 +7,7 @@ Panels:
         - /Global Options1
         - /Pool geometry1
         - /Raw vision robot (expires)1
+        - /One-shot aligned odometry (expires)1
         - /AprilTag debug image1
       Splitter Ratio: 0.55
     Tree Height: 640
@@ -62,6 +63,19 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /brov/viz/vision_robot
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: One-shot aligned odometry (expires)
+      Namespaces:
+        localized_robot: true
+        localized_robot_axes: true
+      Topic:
+        Depth: 10
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /brov/viz/localized_robot
       Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true

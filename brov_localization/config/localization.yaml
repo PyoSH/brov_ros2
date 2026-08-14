@@ -1,0 +1,47 @@
+brov_pool_alignment:
+  ros__parameters:
+    # Atomic ownership contract: session identity and its local odometry are
+    # delivered in one DDS sample. The standalone base topics are diagnostics.
+    odometry_session_topic: /brov/odometry/local_with_session
+    vision_topic: /brov/aruco/robot_pose_pool
+    visible_topic: /brov/aruco/visible
+    aligned_odometry_topic: /brov/localization/odometry_pool_with_alignment
+    # Standard nav_msgs output retained for RViz and diagnostics only.
+    pool_odometry_topic: /brov/localization/odometry_pool
+    status_topic: /brov/localization/status
+    valid_topic: /brov/localization/valid
+
+    pool_frame: pool
+    odom_frame: odom
+    base_frame: base_link
+
+    # Initialization is explicit. A request with min_samples=0 uses this value.
+    default_min_samples: 20
+    max_buffer_samples: 200
+    sample_retention_s: 8.0
+
+    # Both message stamps must be recent and mutually close. They are currently
+    # MAVLink receive time and camera decode time, not true acquisition time;
+    # this gate limits skew but cannot compensate transport/decode latency.
+    max_message_age_s: 0.5
+    max_future_offset_s: 0.05
+    visible_timeout_s: 0.5
+    max_timestamp_skew_s: 0.08
+
+    # Samples are collected only while both norms are below these limits.
+    stationary_linear_speed_mps: 0.03
+    stationary_angular_speed_rad_s: 0.05
+
+    # Robust full-SE(3) estimate gates. Pool and odom are both gravity-aligned,
+    # so large final roll/pitch indicates a frame, survey, or extrinsic error.
+    max_translation_residual_m: 0.15
+    max_rotation_residual_deg: 10.0
+    max_abs_alignment_roll_deg: 15.0
+    max_abs_alignment_pitch_deg: 15.0
+
+    # Fail closed: an operator must explicitly confirm that the physical camera
+    # tilt is at the calibrated neutral pose for the current odometry session.
+    require_camera_tilt_neutral_confirmation: true
+
+    # Stay comfortably inside the mission consumer's 1 s status-age gate.
+    status_publish_period_s: 0.5

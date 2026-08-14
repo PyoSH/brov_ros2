@@ -12,7 +12,15 @@ set +u
 source "${BROV_ROS_WS}/install/setup.bash"
 set -u
 
-for package in brov_base brov_control brov_perception brov_viz brov_bringup; do
+for package in \
+    brov_interfaces \
+    brov_base \
+    brov_control \
+    brov_perception \
+    brov_localization \
+    brov_mission \
+    brov_viz \
+    brov_bringup; do
     ros2 pkg prefix "${package}" >/dev/null
 done
 

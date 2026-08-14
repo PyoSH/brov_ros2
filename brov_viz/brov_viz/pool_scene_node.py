@@ -1,4 +1,4 @@
-"""Publish an RViz-only pool scene and a short-lived raw vision robot ghost."""
+"""Publish an RViz-only pool scene and short-lived robot pose ghosts."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import math
 
 import rclpy
 from geometry_msgs.msg import Point, PoseStamped
+from nav_msgs.msg import Odometry
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.qos import (
@@ -13,6 +14,7 @@ from rclpy.qos import (
     HistoryPolicy,
     QoSProfile,
     ReliabilityPolicy,
+    qos_profile_sensor_data,
 )
 from std_msgs.msg import Bool, ColorRGBA
 from visualization_msgs.msg import Marker, MarkerArray
@@ -30,7 +32,9 @@ from .geometry import (
 
 STATIC_TOPIC = "/brov/viz/pool"
 VISION_TOPIC = "/brov/viz/vision_robot"
+LOCALIZED_TOPIC = "/brov/viz/localized_robot"
 POSE_TOPIC = "/brov/aruco/robot_pose_pool"
+ODOMETRY_TOPIC = "/brov/localization/odometry_pool"
 VISIBLE_TOPIC = "/brov/aruco/visible"
 
 
@@ -73,6 +77,7 @@ class PoolSceneNode(Node):
         super().__init__("brov_pool_scene")
 
         self.declare_parameter("pool_frame", "")
+        self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("pool_size_xyz", [4.0, 1.7, 1.1])
         self.declare_parameter("marker_xyz", [0.0, 0.0, 0.0])
         self.declare_parameter(
@@ -90,10 +95,13 @@ class PoolSceneNode(Node):
         )
 
         self._pool_frame = str(self.get_parameter("pool_frame").value).strip()
+        self._base_frame = str(self.get_parameter("base_frame").value).strip()
         if not self._pool_frame or self._pool_frame.startswith("/"):
             raise ValueError(
                 "pool_frame must be a non-empty relative frame name"
             )
+        if not self._base_frame or self._base_frame.startswith("/"):
+            raise ValueError("base_frame must be a non-empty relative frame name")
         self._pool_size = finite_vector(
             self.get_parameter("pool_size_xyz").value, 3, "pool_size_xyz"
         )
@@ -143,15 +151,26 @@ class PoolSceneNode(Node):
         self._vision_publisher = self.create_publisher(
             MarkerArray, VISION_TOPIC, dynamic_qos
         )
+        self._localized_publisher = self.create_publisher(
+            MarkerArray, LOCALIZED_TOPIC, dynamic_qos
+        )
         self.create_subscription(
             PoseStamped, POSE_TOPIC, self._on_pose, dynamic_qos
         )
         self.create_subscription(
             Bool, VISIBLE_TOPIC, self._on_visible, dynamic_qos
         )
+        self.create_subscription(
+            Odometry,
+            ODOMETRY_TOPIC,
+            self._on_localized_odometry,
+            qos_profile_sensor_data,
+        )
 
-        self._ghost_present = False
-        self._last_pose_received_ns: int | None = None
+        self._vision_ghost_present = False
+        self._localized_ghost_present = False
+        self._last_vision_received_ns: int | None = None
+        self._last_localized_received_ns: int | None = None
         self._static_publisher.publish(self._static_scene())
         self.create_timer(0.1, self._expire_stale_pose)
         self.get_logger().info(
@@ -263,7 +282,7 @@ class PoolSceneNode(Node):
 
     def _on_visible(self, message: Bool) -> None:
         if not message.data:
-            self._clear_ghost()
+            self._clear_vision_ghost()
 
     def _on_pose(self, message: PoseStamped) -> None:
         if message.header.frame_id != self._pool_frame:
@@ -271,7 +290,7 @@ class PoolSceneNode(Node):
                 f"rejecting vision pose in frame '{message.header.frame_id}'; "
                 f"expected '{self._pool_frame}'"
             )
-            self._clear_ghost()
+            self._clear_vision_ghost()
             return
 
         position = (
@@ -290,14 +309,54 @@ class PoolSceneNode(Node):
             quaternion = normalized_quaternion(quaternion)
         except ValueError as exc:
             self.get_logger().warning(f"rejecting invalid vision pose: {exc}")
-            self._clear_ghost()
+            self._clear_vision_ghost()
             return
 
-        self._last_pose_received_ns = self.get_clock().now().nanoseconds
+        self._last_vision_received_ns = self.get_clock().now().nanoseconds
         self._vision_publisher.publish(
             self._vision_scene(message, position, quaternion)
         )
-        self._ghost_present = True
+        self._vision_ghost_present = True
+
+    def _on_localized_odometry(self, message: Odometry) -> None:
+        if (
+            message.header.frame_id != self._pool_frame
+            or message.child_frame_id != self._base_frame
+        ):
+            self.get_logger().warning(
+                "rejecting localized odometry with unexpected frames: "
+                f"{message.header.frame_id!r} -> {message.child_frame_id!r}"
+            )
+            self._clear_localized_ghost()
+            return
+        position = (
+            message.pose.pose.position.x,
+            message.pose.pose.position.y,
+            message.pose.pose.position.z,
+        )
+        quaternion = (
+            message.pose.pose.orientation.x,
+            message.pose.pose.orientation.y,
+            message.pose.pose.orientation.z,
+            message.pose.pose.orientation.w,
+        )
+        try:
+            position = finite_vector(position, 3, "localized position")
+            quaternion = normalized_quaternion(quaternion)
+        except ValueError as exc:
+            self.get_logger().warning(
+                f"rejecting invalid localized odometry: {exc}"
+            )
+            self._clear_localized_ghost()
+            return
+        source = PoseStamped()
+        source.header = message.header
+        source.pose = message.pose.pose
+        self._last_localized_received_ns = self.get_clock().now().nanoseconds
+        self._localized_publisher.publish(
+            self._localized_scene(source, position, quaternion)
+        )
+        self._localized_ghost_present = True
 
     def _vision_scene(
         self, source: PoseStamped, position, quaternion
@@ -383,24 +442,68 @@ class PoolSceneNode(Node):
         markers.append(label)
         return MarkerArray(markers=markers)
 
-    def _expire_stale_pose(self) -> None:
-        if self._last_pose_received_ns is None:
-            return
-        elapsed = (
-            self.get_clock().now().nanoseconds - self._last_pose_received_ns
-        ) * 1.0e-9
-        if elapsed > self._pose_timeout:
-            self._clear_ghost()
+    def _localized_scene(
+        self, source: PoseStamped, position, quaternion
+    ) -> MarkerArray:
+        """Render the held pool alignment propagated by local odometry."""
 
-    def _clear_ghost(self) -> None:
-        self._last_pose_received_ns = None
-        if not self._ghost_present:
+        markers = self._vision_scene(source, position, quaternion).markers
+        valid_bounds = inside_pool(position, self._pool_size)
+        for marker in markers:
+            marker.ns = marker.ns.replace("vision_robot", "localized_robot")
+            if marker.type == Marker.CUBE:
+                marker.color = (
+                    _color(0.1, 0.45, 1.0, 0.45)
+                    if valid_bounds
+                    else _color(1.0, 0.05, 0.05, 0.55)
+                )
+            elif marker.type == Marker.TEXT_VIEW_FACING:
+                marker.color = (
+                    _color(0.25, 0.7, 1.0, 1.0)
+                    if valid_bounds
+                    else _color(1.0, 0.1, 0.1, 1.0)
+                )
+                marker.text = (
+                    (
+                        "ONE-SHOT ALIGNED ODOM\n"
+                        if valid_bounds
+                        else "ALIGNED ODOM OUTSIDE POOL\n"
+                    )
+                    + f"base_link x={position[0]:.2f} "
+                    f"y={position[1]:.2f} z={position[2]:.2f} m"
+                )
+        return MarkerArray(markers=markers)
+
+    def _expire_stale_pose(self) -> None:
+        now_ns = self.get_clock().now().nanoseconds
+        if self._last_vision_received_ns is not None:
+            elapsed = (now_ns - self._last_vision_received_ns) * 1.0e-9
+            if elapsed > self._pose_timeout:
+                self._clear_vision_ghost()
+        if self._last_localized_received_ns is not None:
+            elapsed = (now_ns - self._last_localized_received_ns) * 1.0e-9
+            if elapsed > self._pose_timeout:
+                self._clear_localized_ghost()
+
+    def _clear_vision_ghost(self) -> None:
+        self._last_vision_received_ns = None
+        if not self._vision_ghost_present:
             return
         delete = Marker()
         delete.header.frame_id = self._pool_frame
         delete.action = Marker.DELETEALL
         self._vision_publisher.publish(MarkerArray(markers=[delete]))
-        self._ghost_present = False
+        self._vision_ghost_present = False
+
+    def _clear_localized_ghost(self) -> None:
+        self._last_localized_received_ns = None
+        if not self._localized_ghost_present:
+            return
+        delete = Marker()
+        delete.header.frame_id = self._pool_frame
+        delete.action = Marker.DELETEALL
+        self._localized_publisher.publish(MarkerArray(markers=[delete]))
+        self._localized_ghost_present = False
 
 
 def main(args=None) -> None:

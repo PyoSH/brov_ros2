@@ -79,13 +79,13 @@ class ObservationBuilder:
 
     def build(
         self,
-        att_quat_ned  : torch.Tensor,   # (4,) [w,x,y,z] body→NED-world
+        att_quat_ned: torch.Tensor,   # (4,) [w,x,y,z] body→NED-world
         body_rates_ned: torch.Tensor,   # (3,) [p,q,r] NED body frame
-        pos_ned       : torch.Tensor,   # (3,) NED world
-        vel_ned       : torch.Tensor,   # (3,) NED world
+        pos_ned: torch.Tensor,   # (3,) NED world
+        vel_ned: torch.Tensor,   # (3,) NED world
         guidance,                        # brov_base.guidance.LOSGuidance
-        dt            : float,
-        integrate     : bool = True,
+        dt: float,
+        integrate: bool = True,
         advance_waypoint: bool = True,
     ) -> tuple[torch.Tensor, dict]:
         assert self._origin_ned is not None, "reset()으로 origin을 먼저 잡아야 함"
@@ -98,7 +98,11 @@ class ObservationBuilder:
 
         # ── guidance는 선택된 waypoint frame에서 계산한다 ──
         v_d_b_ned, q_d_ned = guidance.compute(
-            pos_env, q_b, advance_waypoint=advance_waypoint
+            pos_env,
+            q_b,
+            advance_waypoint=advance_waypoint,
+            dt=dt if integrate else 0.0,
+            angular_speed_rad_s=body_rates_ned.norm().reshape(1),
         )
         v_d_b_ned = v_d_b_ned.squeeze(0)
         q_d_ned = q_d_ned.squeeze(0)

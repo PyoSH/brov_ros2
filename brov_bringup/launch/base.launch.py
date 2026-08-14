@@ -32,6 +32,12 @@ def generate_launch_description() -> LaunchDescription:
     connection = LaunchConfiguration("connection")
     send_pwm = LaunchConfiguration("send_pwm")
     arm = LaunchConfiguration("arm")
+    require_pool_localization = LaunchConfiguration(
+        "require_pool_localization"
+    )
+    require_resolved_mission = LaunchConfiguration(
+        "require_resolved_mission"
+    )
 
     return LaunchDescription(
         [
@@ -56,7 +62,31 @@ def generate_launch_description() -> LaunchDescription:
                 "send_pwm", default_value="false", choices=["true", "false"]
             ),
             DeclareLaunchArgument(
-                "arm", default_value="false", choices=["true", "false"]
+                "arm",
+                default_value="false",
+                choices=["true", "false"],
+                description=(
+                    "Permit the explicit arm_control service; launch, prepare, "
+                    "and start never arm automatically."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "require_pool_localization",
+                default_value="false",
+                choices=["true", "false"],
+                description=(
+                    "Reject control start unless the current odometry session "
+                    "has an initialized pool-frame alignment."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "require_resolved_mission",
+                default_value="false",
+                choices=["true", "false"],
+                description=(
+                    "Reject control start unless an immutable mission resolved "
+                    "for the current localization epoch is available."
+                ),
             ),
             OpaqueFunction(function=_validate_output_options),
             Node(
@@ -73,6 +103,12 @@ def generate_launch_description() -> LaunchDescription:
                         "connection": ParameterValue(connection, value_type=str),
                         "send_pwm": ParameterValue(send_pwm, value_type=bool),
                         "arm": ParameterValue(arm, value_type=bool),
+                        "require_pool_localization": ParameterValue(
+                            require_pool_localization, value_type=bool
+                        ),
+                        "require_resolved_mission": ParameterValue(
+                            require_resolved_mission, value_type=bool
+                        ),
                     },
                 ],
             ),

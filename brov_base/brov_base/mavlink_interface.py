@@ -41,15 +41,20 @@ MAV_CMD_DO_MOUNT_CONTROL 명령으로만 제어한다.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+import math
 import threading
 import time
+import uuid
 
 import torch
 
+from brov_base.mavlink_time import BootTimeDisposition, MavlinkBootTimeTracker
+
 _PWM_NEUTRAL_US = 1500
-_PWM_RANGE_US   = 400   # [-1,1] → 1500 ± 400 = [1100, 1900]
-_RC_RELEASE     = 65535   # MAVLink RC_CHANNELS_OVERRIDE 규약: 채널을 RC로 반환
-_RC_NO_CHANGE   = 0
+_PWM_RANGE_US = 400   # [-1,1] → 1500 ± 400 = [1100, 1900]
+_RC_RELEASE = 65535   # MAVLink RC_CHANNELS_OVERRIDE 규약: 채널을 RC로 반환
+_RC_NO_CHANGE = 0
 _RC_PASSTHRU_FUNCTION = 1   # ArduSub SERVOn_FUNCTION: RCPassThru
 _GCS_HEARTBEAT_PERIOD_S = 1.0
 _PARAM_REQUEST_PERIOD_S = 1.0
@@ -66,15 +71,20 @@ _THRUSTER_REVERSAL_SIGN = torch.tensor(
 # — 연속 실패 카운트가 필요하면 obs_builder 쪽에서 추가할 것.
 _EKF_VEL_VARIANCE_BAD = 0.8
 
+# Immutable root identifier for the lifetime of this Python process.  The
+# externally visible odometry session appends the detected autopilot boot
+# epoch, so either a process restart or an autopilot reboot changes it.
+_PROCESS_ODOMETRY_ID = str(uuid.uuid4())
+
 
 class RealRobotInterface:
     """ArduSub 기체와의 MAVLink 통신 — 텔레메트리 수신(백그라운드 스레드) + PWM 송신."""
 
     def __init__(
         self,
-        connection_string  : str,
+        connection_string: str,
         thruster_rc_channels: list[int] | None = None,
-        telemetry_rate_hz  : float = 25.0,
+        telemetry_rate_hz: float = 25.0,
         thruster_reversal_sign: list[float] | torch.Tensor | None = None,
     ):
         self._conn_str = connection_string
@@ -88,7 +98,10 @@ class RealRobotInterface:
         )
         if self._thruster_reversal_sign.shape != (8,):
             raise ValueError("thruster_reversal_sign은 8개 값이어야 함")
-        if not torch.all((self._thruster_reversal_sign == 1) | (self._thruster_reversal_sign == -1)):
+        if not torch.all(
+            (self._thruster_reversal_sign == 1)
+            | (self._thruster_reversal_sign == -1)
+        ):
             raise ValueError("thruster_reversal_sign 값은 +1 또는 -1이어야 함")
 
         self._master = None
@@ -100,6 +113,9 @@ class RealRobotInterface:
         self._recv_thread: threading.Thread | None = None
         self._last_gcs_heartbeat_tx = 0.0
 
+        self._odometry_process_id = _PROCESS_ODOMETRY_ID
+        self._mavlink_boot_time = MavlinkBootTimeTracker()
+
         # 최신 텔레메트리 (락으로 보호) — 아직 수신 전이면 None
         self._att_quat_ned = None   # torch (4,) [w,x,y,z]
         self._body_rates_ned = None  # torch (3,) [p,q,r]
@@ -110,6 +126,8 @@ class RealRobotInterface:
         self._last_att_time = 0.0
         self._last_pos_time = 0.0
         self._last_ekf_time = 0.0
+        self._att_time_boot_ms: int | None = None
+        self._pos_time_boot_ms: int | None = None
         self._att_seq = 0
         self._pos_seq = 0
         self._servo_output_us = None
@@ -118,11 +136,25 @@ class RealRobotInterface:
         self._custom_mode = None
         self._heartbeat_system = None
         self._heartbeat_component = None
+        self._last_heartbeat_time = 0.0
         self._param_values: dict[str, float] = {}
 
         self._original_servo_functions: list[int] | None = None
         self._original_camera_rc_options: dict[int, int] | None = None
         self._camera_mount_mavlink_active = False
+
+    # ------------------------------------------------------------------
+    @property
+    def odometry_session_id(self) -> str:
+        """Identifier for this process and the current autopilot boot epoch.
+
+        The UUID prefix is immutable for the process.  The numeric suffix only
+        changes when a non-wrap MAVLink ``time_boot_ms`` reset is detected.
+        Consumers can therefore treat any string change as an odometry epoch
+        boundary without interpreting the reset counter separately.
+        """
+
+        return f"{self._odometry_process_id}:{self._mavlink_boot_time.reset_count}"
 
     # ------------------------------------------------------------------
     def connect(self) -> None:
@@ -156,6 +188,7 @@ class RealRobotInterface:
         self._custom_mode = int(heartbeat.custom_mode)
         self._heartbeat_system = self._master.target_system
         self._heartbeat_component = self._master.target_component
+        self._last_heartbeat_time = time.monotonic()
         print(f"[RealRobotInterface] heartbeat 수신 — system {self._master.target_system}, "
               f"component {self._master.target_component}")
 
@@ -212,6 +245,12 @@ class RealRobotInterface:
             now = time.monotonic()
             with self._lock:
                 if t == "ATTITUDE_QUATERNION":
+                    boot_observation = self._observe_boot_time_locked(
+                        "attitude", getattr(msg, "time_boot_ms", None), now
+                    )
+                    if not boot_observation.accept_payload:
+                        continue
+                    self._att_time_boot_ms = boot_observation.time_boot_ms
                     quat = torch.tensor(
                         [msg.q1, msg.q2, msg.q3, msg.q4], dtype=torch.float32
                     )
@@ -220,7 +259,10 @@ class RealRobotInterface:
                     norm = quat.norm()
                     if torch.isfinite(quat).all() and norm > 1e-6:
                         quat = quat / norm
-                        if self._att_quat_ned is not None and torch.dot(quat, self._att_quat_ned) < 0:
+                        if (
+                            self._att_quat_ned is not None
+                            and torch.dot(quat, self._att_quat_ned) < 0
+                        ):
                             quat = -quat
                     self._att_quat_ned = quat
                     self._body_rates_ned = torch.tensor(
@@ -229,6 +271,12 @@ class RealRobotInterface:
                     self._last_att_time = now
                     self._att_seq += 1
                 elif t == "LOCAL_POSITION_NED":
+                    boot_observation = self._observe_boot_time_locked(
+                        "local_position", getattr(msg, "time_boot_ms", None), now
+                    )
+                    if not boot_observation.accept_payload:
+                        continue
+                    self._pos_time_boot_ms = boot_observation.time_boot_ms
                     self._pos_ned = torch.tensor([msg.x, msg.y, msg.z], dtype=torch.float32)
                     self._vel_ned = torch.tensor([msg.vx, msg.vy, msg.vz], dtype=torch.float32)
                     self._last_pos_time = now
@@ -246,16 +294,64 @@ class RealRobotInterface:
                 elif t == "HEARTBEAT":
                     if (msg.get_srcSystem() == self._master.target_system
                             and msg.get_srcComponent() == self._master.target_component):
-                        self._armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+                        self._armed = bool(
+                            msg.base_mode
+                            & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED
+                        )
                         self._custom_mode = int(msg.custom_mode)
                         self._heartbeat_system = int(msg.get_srcSystem())
                         self._heartbeat_component = int(msg.get_srcComponent())
+                        self._last_heartbeat_time = now
                 elif t == "PARAM_VALUE":
                     if isinstance(msg.param_id, bytes):
                         param_id = msg.param_id.decode("utf-8", errors="replace").rstrip("\x00")
                     else:
                         param_id = msg.param_id.rstrip("\x00")
                     self._param_values[param_id] = msg.param_value
+
+    def _clear_navigation_stream_locked(self, stream: str) -> None:
+        """Clear one pose stream while ``self._lock`` is held."""
+
+        if stream == "attitude":
+            self._att_quat_ned = None
+            self._body_rates_ned = None
+            self._last_att_time = 0.0
+            self._att_time_boot_ms = None
+        elif stream == "local_position":
+            self._pos_ned = None
+            self._vel_ned = None
+            self._last_pos_time = 0.0
+            self._pos_time_boot_ms = None
+        else:
+            raise ValueError(f"unknown navigation stream: {stream}")
+
+    def _clear_navigation_telemetry_locked(self) -> None:
+        """Invalidate both pose streams at an odometry epoch boundary."""
+
+        self._clear_navigation_stream_locked("attitude")
+        self._clear_navigation_stream_locked("local_position")
+        self._ekf_vel_variance = None
+        self._ekf_flags = None
+        self._last_ekf_time = 0.0
+
+    def _observe_boot_time_locked(self, stream: str, time_boot_ms, rx_time: float):
+        """Classify a payload timestamp and apply fail-closed invalidation.
+
+        The first possible reset report is not enough to change the public
+        session, but its own cached stream is invalidated until a current-epoch
+        packet arrives.  Once another stream confirms the reset, *both* cached
+        streams are cleared before the confirming payload is stored.  A caller
+        must only store the payload when ``accept_payload`` is true.
+        """
+
+        observation = self._mavlink_boot_time.observe(
+            stream, time_boot_ms, rx_time
+        )
+        if observation.disposition is BootTimeDisposition.RESET:
+            self._clear_navigation_telemetry_locked()
+        elif observation.disposition is BootTimeDisposition.RESET_CANDIDATE:
+            self._clear_navigation_stream_locked(stream)
+        return observation
 
     # ------------------------------------------------------------------
     def snapshot(self) -> dict | None:
@@ -264,29 +360,54 @@ class RealRobotInterface:
             if self._att_quat_ned is None or self._pos_ned is None:
                 return None
             return {
-                "att_quat_ned"    : self._att_quat_ned.clone(),
-                "body_rates_ned"  : self._body_rates_ned.clone(),
-                "pos_ned"         : self._pos_ned.clone(),
-                "vel_ned"         : self._vel_ned.clone(),
+                "att_quat_ned": self._att_quat_ned.clone(),
+                "body_rates_ned": self._body_rates_ned.clone(),
+                "pos_ned": self._pos_ned.clone(),
+                "vel_ned": self._vel_ned.clone(),
                 "ekf_vel_variance": self._ekf_vel_variance,
-                "ekf_flags"       : self._ekf_flags,
-                "att_age_s"       : time.monotonic() - self._last_att_time,
-                "pos_age_s"       : time.monotonic() - self._last_pos_time,
-                "ekf_age_s"       : (
+                "ekf_flags": self._ekf_flags,
+                "att_age_s": time.monotonic() - self._last_att_time,
+                "pos_age_s": time.monotonic() - self._last_pos_time,
+                "ekf_age_s": (
                     float("inf") if self._last_ekf_time == 0.0
                     else time.monotonic() - self._last_ekf_time
                 ),
-                "att_rx_time"     : self._last_att_time,
-                "pos_rx_time"     : self._last_pos_time,
-                "att_seq"         : self._att_seq,
-                "pos_seq"         : self._pos_seq,
+                "att_rx_time": self._last_att_time,
+                "pos_rx_time": self._last_pos_time,
+                "att_time_boot_ms": self._att_time_boot_ms,
+                "pos_time_boot_ms": self._pos_time_boot_ms,
+                "odometry_session_id": self.odometry_session_id,
+                "mavlink_time_reset_detected": self._mavlink_boot_time.reset_detected,
+                "mavlink_time_reset_count": self._mavlink_boot_time.reset_count,
+                "mavlink_time_boot_wrap_count": self._mavlink_boot_time.wrap_count,
+                "mavlink_time_last_reset_rx_time": (
+                    self._mavlink_boot_time.last_reset_rx_time
+                ),
+                "att_seq": self._att_seq,
+                "pos_seq": self._pos_seq,
             }
 
-    def is_ekf_healthy(self, snap: dict) -> bool:
-        """EKF_STATUS_REPORT 기반 속도 신뢰도 게이팅 (ArduPilot ekf_check 임계값 참고)."""
-        if snap["ekf_vel_variance"] is None:
+    def is_ekf_healthy(self, snap: dict, required_flags_mask: int = 0) -> bool:
+        """Return whether EKF variance and optional required flags are valid.
+
+        ``required_flags_mask=0`` preserves the historical variance-only
+        behavior.  A non-zero mask requires every selected
+        ``EKF_STATUS_REPORT.flags`` bit; missing flags then fail closed.
+        """
+
+        if required_flags_mask < 0:
+            raise ValueError("required_flags_mask must be non-negative")
+        variance = snap["ekf_vel_variance"]
+        if variance is None or not math.isfinite(float(variance)):
             return False
-        return snap["ekf_vel_variance"] < _EKF_VEL_VARIANCE_BAD
+        if float(variance) < 0.0 or float(variance) >= _EKF_VEL_VARIANCE_BAD:
+            return False
+        if required_flags_mask == 0:
+            return True
+        flags = snap.get("ekf_flags")
+        if flags is None:
+            return False
+        return (int(flags) & int(required_flags_mask)) == int(required_flags_mask)
 
     def control_snapshot(self) -> dict:
         """자세/EKF와 무관하게 arm, mode, 실제 servo output 상태를 반환한다."""
@@ -296,6 +417,11 @@ class RealRobotInterface:
                 "custom_mode": self._custom_mode,
                 "heartbeat_system": self._heartbeat_system,
                 "heartbeat_component": self._heartbeat_component,
+                "heartbeat_age_s": (
+                    float("inf")
+                    if self._last_heartbeat_time == 0.0
+                    else time.monotonic() - self._last_heartbeat_time
+                ),
                 "servo_output_us": (
                     None if self._servo_output_us is None else self._servo_output_us.clone()
                 ),
@@ -487,22 +613,47 @@ class RealRobotInterface:
     # ------------------------------------------------------------------
     # arm/disarm — motor_interface.py와 동일 재시도 절차. 실기체에서는 보통
     # 조종사가 QGC로 직접 arm하지만, SITL 테스트 편의를 위해 제공.
-    def arm(self, timeout: float = 8.0) -> bool:
+    def arm(
+        self,
+        timeout: float = 8.0,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> bool:
+        """Request arm, optionally aborting promptly when cancellation latches.
+
+        Existing callers retain the same timeout-only behavior.  A safety
+        owner can provide a cheap, thread-safe predicate (for example an
+        e-stop or fault latch); no ARM command is sent after it returns true.
+        """
+
         from pymavlink import mavutil
 
+        if cancel_check is not None and cancel_check():
+            return False
         with self._lock:
             if self._armed:
                 return True   # 이미 armed 상태(예: 이전 실행이 disarm 실패) — 그대로 진행
 
-        t0 = time.time()
-        while time.time() - t0 < timeout:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if cancel_check is not None and cancel_check():
+                return False
             with self._tx_lock:
                 self._master.mav.command_long_send(
                     self._master.target_system, self._master.target_component,
                     mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM, 0,
                     1, 0, 0, 0, 0, 0, 0,
                 )
-            time.sleep(1.5)
+            retry_deadline = min(deadline, time.monotonic() + 1.5)
+            while time.monotonic() < retry_deadline:
+                if cancel_check is not None and cancel_check():
+                    return False
+                with self._lock:
+                    if self._armed:
+                        return True
+                remaining = max(0.0, retry_deadline - time.monotonic())
+                time.sleep(min(0.05, remaining))
+            if cancel_check is not None and cancel_check():
+                return False
             with self._lock:
                 if self._armed:
                     return True

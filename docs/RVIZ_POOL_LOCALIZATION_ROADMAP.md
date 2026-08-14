@@ -2,7 +2,15 @@
 
 ## 상태와 목적
 
-**상태: 설계 기록만 완료, runtime 구현은 보류.**
+**상태: P1 local odometry, P2 raw vision, P3 one-shot alignment 및 typed mission
+backend 구현. InteractiveMarker editor와 continuous fusion은 보류.**
+
+현재 구현된 neutral confirmation, full-SE(3) 초기화, exact-transform
+`alignment_id`, session invalidation, Draft → Validate → Commit 및
+PREPARE → ARM → START 명령은
+[POOL_LOCALIZATION_RUNBOOK.md](POOL_LOCALIZATION_RUNBOOK.md)를 기준 문서로 삼는다.
+아래 내용 중 "향후" interface 제안은 구현된 typed interface와 충돌할 경우 기준
+문서 및 실제 message/service 정의가 우선한다.
 
 이 문서는 RViz에서 다음 정보를 일관된 수조 좌표로 입력·표시하기 위한 향후
 구현 계약을 기록한다.
@@ -13,27 +21,29 @@
 - RViz에서 작성한 3차원 waypoint와 목표 자세
 - 수조 벽면의 surveyed ArUco marker로 초기화한 절대 수조 pose
 
-현재 단계에서는 RViz config, URDF, TF/odometry bridge, localization node,
-waypoint editor를 추가하지 않는다. 특히 RViz는 시각화와 사용자 입력 UI일 뿐이며,
-위치를 추정하거나 `/brov/start_control`을 호출하거나 PWM을 발행하지 않는다.
+현재 단계에서는 odometry bridge, one-shot localization backend, pool scene RViz config와
+typed mission transaction까지 구현했다. URDF/RobotModel, InteractiveMarker waypoint
+editor와 continuous fusion은 추가하지 않았다. RViz는 시각화와 사용자 입력 UI일
+뿐이며, 위치를 추정하거나 PREPARE/ARM/START를 호출하거나 PWM을 발행하지 않는다.
 
 ## 현재 가능한 것과 부족한 것
 
 현재 코드에는 다음 기반 요소가 있다.
 
 - `/brov/camera/image_raw`와 `/brov/camera/camera_info`
-- ArUco의 camera-relative marker pose와 선택적인 marker-relative robot pose
+- ArUco의 camera-relative marker pose와 raw pool-frame robot pose
 - ArduSub `ATTITUDE_QUATERNION` 및 `LOCAL_POSITION_NED`에서 얻은 위치·자세
-- mission-relative 위치와 현재 target waypoint를 담은 debug 배열
+- stamped `/brov/odometry/local`, `odom → base_link` TF와 session identity
+- explicit one-shot `pool → odom`, aligned pool odometry와 localization status
+- typed pool draft Validate/Commit 및 immutable odom-resolved mission
+- nominal pool/marker/raw vision visualization marker
 
 그러나 아래 항목은 아직 없다.
 
-- timestamp와 frame/covariance를 가진 `nav_msgs/Odometry`
-- 영구적인 수조 절대 좌표와 surveyed marker map
-- 충돌 없는 단일 TF tree 및 URDF/RobotModel
-- DVL local pose와 ArUco 절대 pose의 정렬·융합
-- RViz config, 수조 geometry marker, 주행 `Path`
-- runtime waypoint 편집, 검증, 확정 인터페이스
+- 실제 tilt feedback을 포함한 URDF/RobotModel
+- DVL drift를 계속 보정하는 covariance 기반 continuous fusion/multi-marker
+- InteractiveMarker 기반 runtime waypoint editor와 custom RViz panel
+- runtime swept-volume/tether geofence, executed trail과 NBV action interface
 
 현재 `/brov/debug/pos_ned`, `/brov/debug/att_quat_ned`,
 `/brov/debug/pos_mission`은 header가 없는 `Float32MultiArray`다. frame과 획득
@@ -148,16 +158,18 @@ outlier rejection 또는 DVL alignment가 없는 shadow/debug 출력이다. 아�
 `/brov/localization/vision_pose`는 이 raw 측정을 검증·승격할 미래 localization
 interface이며 아직 제공되지 않는다.
 
-아래 이름은 구현 시 검토할 proposal이며 현재 제공되는 API가 아니다.
+아래 중 local odometry와 mission transaction은 구현되었으며, covariance-bearing
+vision 승격·diagnostics·editor 항목은 아직 proposal이다. 현재 실제 service/message
+계약은 [POOL_LOCALIZATION_RUNBOOK.md](POOL_LOCALIZATION_RUNBOOK.md)를 따른다.
 
 | 목적 | 제안 topic/type | frame/비고 |
 |---|---|---|
 | local pose/twist | `/brov/odometry/local` `nav_msgs/Odometry` | `odom`, child `base_link`, covariance 포함 |
-| pool pose measurement | `/brov/localization/vision_pose` `PoseWithCovarianceStamped` | `pool`, raw ArUco를 검증한 결과 |
+| raw pool pose measurement | `/brov/aruco/robot_pose_pool` `PoseStamped` | `pool`, one-shot 입력; covariance 없음 |
 | localization health | `/brov/localization/diagnostics` `DiagnosticArray` | stale, marker ID, reprojection/innovation 상태 |
 | executed trail | `/brov/trajectory` `nav_msgs/Path` | `pool` 또는 initialization 전 `odom` |
 | draft route | `/brov/mission/draft_path` `nav_msgs/Path` | 편집 중이며 제어에 사용하지 않음 |
-| committed route | `/brov/mission/active_path` `nav_msgs/Path` | 검증 후 immutable snapshot |
+| committed route | `/brov/mission/active_path_pool` `nav_msgs/Path` | 검증 후 immutable snapshot |
 | current target | `/brov/mission/current_target` `PoseStamped` | pose와 frame을 명시 |
 | pool geometry | `/brov/pool/markers` `MarkerArray` | 벽, 바닥, 수면, marker, safe volume |
 | mission display | `/brov/mission/markers` `MarkerArray` | 번호, 선, 자세 축, valid/invalid 색상 |
@@ -179,12 +191,15 @@ RViz `MarkerArray`를 planner API로 사용하지 않는다.
 권장 최종 흐름은 다음과 같다.
 
 ```text
-Edit Draft
+Confirm camera tilt neutral
+  → Initialize exact pool → odom alignment
+  → Edit Draft
   → Validate
   → operator visual check
   → Commit immutable active mission
-  → shadow-mode verification
-  → explicit /brov/start_control
+  → PREPARE frozen shadow-mode verification
+  → explicit ARM
+  → explicit START
 ```
 
 click/drag 한 번으로 active waypoint가 바뀌거나 제어가 시작되어서는 안 된다.
@@ -213,20 +228,24 @@ DVL/local odometry blue, vision-only pose magenta다.
 - `brov_base`: MAVLink 단일 소유권과 원본 telemetry 제공
 - `brov_perception`: image-space marker detection과 품질 측정, global TF는 소유하지 않음
 - `brov_description`: URDF, mesh, camera tilt kinematics
-- `brov_localization`: NED/FRD→Z-up/FLU 변환, odometry, ArUco alignment/fusion, TF
-- `brov_viz`: pool marker, RViz config, InteractiveMarker mission editor
-- `brov_interfaces`: mission validation/action이 실제로 필요해질 때만 추가
+- `brov_localization`: one-shot ArUco alignment와 `pool → odom` TF; continuous
+  fusion은 후속 범위
+- `brov_viz`: pool marker와 RViz config; InteractiveMarker mission editor는 후속 범위
+- `brov_interfaces`: localization status/initialize와 immutable mission typed 계약
+- `brov_mission`: pool draft 검증과 current epoch의 odom mission commit
 - `brov_bringup`: 노드 구성만 담당하며 control을 자동 시작하지 않음
 
 ## 단계별 구현 순서
 
-1. **P0 — 현재:** 이 문서의 frame, ownership, UI 계약만 기록한다.
-2. **P1 — 상대 시각화:** 같은 MAVLink snapshot에서 stamped Odometry/TF를 만들고
-   URDF, trail, 기존 설정 경로를 `odom` 기준으로 표시한다.
-3. **P2 — vision shadow:** 수중 calibration, neutral-locked tilt, marker survey,
-   pool pose measurement와 DVL ghost comparison을 구현한다. 제어에는 연결하지 않는다.
-4. **P3 — 명시적 초기화와 editor:** `pool → odom` initialize service,
-   InteractiveMarker의 Draft/Validate/Commit, RViz config를 구현한다.
+1. **P0 — 완료:** frame, ownership, UI 계약을 기록했다.
+2. **P1 — backend 완료:** 같은 MAVLink snapshot에서 stamped Odometry/TF와 session
+   identity를 만든다. URDF/trail은 후속이다.
+3. **P2 — 완료:** neutral-locked tilt와 marker survey를 사용한 raw pool pose 및
+   RViz vision ghost를 제공한다.
+4. **P3 — backend 완료/editor 보류:** explicit camera-neutral confirmation,
+   `pool → odom` initialize, boot-unique exact-transform identity, typed
+   Draft/Validate/Commit과 PREPARE → ARM → START gate를 구현했다.
+   InteractiveMarker editor는 후속이다.
 5. **P4 — robustness:** multi-marker/fusion, camera tilt kinematics, runtime geofence,
    localization loss/reacquisition 정책을 검증한다.
 6. **P5 — NBV:** 같은 `pool` frame에서 3-D reconstruction과 candidate viewpoint를

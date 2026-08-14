@@ -1,0 +1,37 @@
+brov_mission_manager:
+  ros__parameters:
+    # Sim2Swim case A keeps the position-only v1 contract.  The operator
+    # supplies two absolute pool points; align turns the vehicle along the LOS.
+    contract_version: brov_pool_position_mission_v1
+    pool_frame: pool
+    odom_frame: odom
+    base_frame: base_link
+    aligned_odometry_topic: /brov/localization/odometry_pool_with_alignment
+
+    orientation_support_enabled: false
+    identity_orientation_tolerance: 0.001
+
+    # Authored waypoint centre/segment bounds only; the finite measured start
+    # may be just outside (for example, on the floor).  Its entry to waypoint 0
+    # remains bounded by max_first_point_distance_m.  This is not a
+    # swept-volume/runtime geofence.
+    pool_safe_min_xyz: [0.35, 0.30, 0.20]
+    pool_safe_max_xyz: [3.65, 1.40, 0.90]
+    max_first_point_distance_m: 0.30
+    min_segment_length_m: 0.05
+    max_segment_length_m: 2.0
+    min_waypoints: 2
+    max_waypoints: 2
+
+    localization_max_age_s: 1.0
+    odometry_max_age_s: 0.5
+
+    cruise_speed: 0.10
+    lookahead_dist: 0.40
+    reach_threshold: 0.15
+    max_cruise_speed: 0.30
+    max_lookahead_dist: 1.00
+    max_reach_threshold: 0.50
+    heading_mode: align
+    loop: true
+    allowed_heading_modes: [align]

@@ -4,7 +4,7 @@
 <package format="3">
   <name>brov_viz</name>
   <version>0.1.0</version>
-  <description>Pool and raw vision-pose visualization for BlueROV2.</description>
+  <description>Pool, raw vision, and aligned odometry visualization for BlueROV2.</description>
 
   <maintainer email="jeongmok99@koreatech.ac.kr">Pyo Seunghyeon</maintainer>
   <license>Proprietary</license>
@@ -15,6 +15,7 @@
   <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>std_msgs</exec_depend>

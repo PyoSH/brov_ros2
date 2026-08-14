@@ -1,0 +1,4 @@
+nav_msgs/Odometry odometry
+uint64 localization_epoch
+string odometry_session_id
+string alignment_id

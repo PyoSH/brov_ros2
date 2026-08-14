@@ -79,6 +79,7 @@ class ModelBasedControllerNode(Node):
 
         self._enabled = False
         self._control_active = False
+        self._discard_next_active_observation = False
         self._last_obs_time: float | None = None
 
         self.pub_wrench_zup = self.create_publisher(
@@ -114,13 +115,13 @@ class ModelBasedControllerNode(Node):
             Float32MultiArray,
             "/brov/observation",
             self._on_observation,
-            10,
+            1,
         )
         self.sub_active = self.create_subscription(
             Bool,
             "/brov/control_active",
             self._on_control_active,
-            10,
+            1,
         )
         self.srv_start = self.create_service(
             Trigger, "/brov/model_based/start", self._on_start
@@ -166,7 +167,14 @@ class ModelBasedControllerNode(Node):
         self._publish_enabled()
 
     def _on_control_active(self, message: Bool) -> None:
-        self._control_active = bool(message.data)
+        active = bool(message.data)
+        if active and not self._control_active:
+            self._discard_next_active_observation = True
+            self._last_obs_time = None
+        if not active:
+            self._discard_next_active_observation = False
+            self._last_obs_time = None
+        self._control_active = active
         if self._enabled and not self._control_active:
             self._disable("base control inactive")
 
@@ -186,7 +194,14 @@ class ModelBasedControllerNode(Node):
                 self._disable(str(error))
             return
 
-        self._last_obs_time = time.monotonic()
+        if self._control_active and self._discard_next_active_observation:
+            # Cross-topic delivery order is not a freshness proof.  Discard
+            # one depth-one observation after enable and require the next one
+            # before model_based/start can succeed.
+            self._discard_next_active_observation = False
+            self._last_obs_time = None
+        else:
+            self._last_obs_time = time.monotonic()
         self.pub_wrench_zup.publish(
             Float32MultiArray(data=output.wrench_zup.tolist())
         )

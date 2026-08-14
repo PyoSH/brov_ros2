@@ -25,7 +25,7 @@ brov_aruco_pose_node:
     # printed bitmap is therefore 180 deg in-plane from the earlier assumption.
     publish_pool_pose: true
     pool_frame: pool
-    pool_to_marker_xyz: [3.8, 0.85, 0.24]
+    pool_to_marker_xyz: [3.95, 0.85, 0.35]
     pool_to_marker_quaternion_xyzw: [-0.5, -0.5, 0.5, 0.5]
 
     # ^base T_camera_optical. Translation is the Camera_frame position under

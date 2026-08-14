@@ -5,5 +5,47 @@ brov_obs_node:
     ekf_max_age_s: 0.5
     max_integration_dt_s: 0.3
     quat_norm_tolerance: 0.1
+    # Source stamps must describe one coherent estimator state.
+    telemetry_source_skew_max_ms: 150
+    heartbeat_max_age_s: 2.0
+    # ArduSub MANUAL. Direct RCPassThru output is rejected in every other mode.
+    required_custom_mode: 19
+    # MAV_ESTIMATOR_TYPE flags: attitude(1), horizontal velocity(2), vertical
+    # velocity(4), relative horizontal position(8), absolute vertical position(32).
+    required_ekf_flags: 47
     integral_vel_limit: 5.0
     integral_att_limit: 5.0
+
+    # Advance the odometry session if DVL/EKF position or AHRS attitude jumps
+    # farther than physically plausible between adjacent fresh samples.
+    odom_jump_translation_m: 0.50
+    odom_jump_rotation_deg: 45.0
+    odom_jump_max_dt_s: 0.50
+
+    # ARM is a short transaction, not a persistent unattended state. The
+    # controller gets a generous first-command grace, then a tight watchdog.
+    arm_to_start_timeout_s: 8.0
+    first_pwm_timeout_s: 8.0
+    pwm_command_timeout_s: 0.25
+
+    max_prepare_position_drift_m: 0.10
+    max_prepare_attitude_drift_deg: 10.0
+    max_resolved_waypoints: 50
+    max_resolved_segment_length_m: 4.0
+    max_resolved_cruise_speed: 0.30
+    max_resolved_lookahead_dist: 1.0
+    max_resolved_reach_threshold: 0.50
+
+    # Consumer-side ceiling for the separately versioned random-attitude
+    # mission. Generic/v1 profiles leave PWM slew disabled; the Case-C launch
+    # selects a dedicated safety file with a positive fail-closed rate limit.
+    max_random_attitude_slew_rate_rad_s: 0.50
+    max_random_attitude_tolerance_rad: 0.35
+    max_random_angular_speed_tolerance_rad_s: 0.20
+    min_random_attitude_dwell_s: 0.50
+    max_random_mission_duration_s: 180.0
+    max_random_mission_laps: 1
+
+    max_pwm_abs: 1.0
+    max_pwm_delta_per_s: 0.0
+    pwm_rate_first_command_dt_s: 0.04

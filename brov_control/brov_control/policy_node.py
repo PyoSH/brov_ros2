@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""TorchScript policy inference node.
+"""
+TorchScript policy inference node.
 
 The node is deliberately computation-only: it subscribes to the observation,
-publishes the six-axis policy action and maps that action to eight normalized
-thruster commands. ``brov_base`` owns MAVLink and the actual PWM gateway.
+publishes the six-axis policy action and a continuously inspectable PWM preview,
+then forwards commands to the hardware-facing topic only while base control is
+active. ``brov_base`` owns MAVLink and the actual PWM gateway.
 """
 
 from __future__ import annotations
@@ -11,7 +13,7 @@ from __future__ import annotations
 import torch
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Float32MultiArray
+from std_msgs.msg import Bool, Float32MultiArray
 
 from brov_base.vendor.params import load_brov2_yaml, thruster_pos_dir_ned
 from brov_base.vendor.thruster import (
@@ -26,6 +28,31 @@ from .policy_runner import PolicyRunner
 _WRENCH_SCALE = torch.tensor([85.0, 85.0, 120.0, 26.0, 14.0, 22.0])
 _ACTION_LABELS = ["surge", "sway ", "heave", "roll ", "pitch", "yaw  "]
 _BAR_WIDTH = 20
+
+
+def _finite_limit_vector(values, *, length: int, name: str) -> torch.Tensor:
+    """Validate one non-negative per-axis operational limit vector."""
+    result = torch.as_tensor(list(values), dtype=torch.float32)
+    if result.shape != (length,):
+        raise ValueError(f"{name} must contain exactly {length} values")
+    if not torch.isfinite(result).all() or bool((result < 0.0).any()):
+        raise ValueError(f"{name} must contain finite non-negative values")
+    return result
+
+
+def _limit_pwm_step(
+    requested: torch.Tensor,
+    previous: torch.Tensor,
+    *,
+    absolute_limit: float,
+    max_delta: float | None,
+) -> torch.Tensor:
+    """Apply the case profile's absolute and per-sample PWM envelope."""
+    bounded = requested.clamp(-absolute_limit, absolute_limit)
+    if max_delta is None:
+        return bounded
+    delta = (bounded - previous).clamp(-max_delta, max_delta)
+    return previous + delta
 
 
 def _action_bar(label: str, value: float, width: int = _BAR_WIDTH) -> str:
@@ -53,6 +80,12 @@ class PolicyNode(Node):
         self.declare_parameter("vehicle_config", "")
         self.declare_parameter("obs_rate_hz", 25.0)
         self.declare_parameter("vis_rate_hz", 2.0)
+        self.declare_parameter("action_abs_limit", [1.0] * 6)
+        self.declare_parameter("pwm_abs_limit", 1.0)
+        # Zero preserves the exported policy's legacy behavior.  Safety-
+        # critical profiles such as pool random-attitude v2 must explicitly
+        # provide a positive rate.
+        self.declare_parameter("pwm_slew_rate_per_s", 0.0)
 
         policy_path = str(self.get_parameter("policy_path").value)
         if not policy_path:
@@ -63,8 +96,44 @@ class PolicyNode(Node):
         vis_rate_hz = float(self.get_parameter("vis_rate_hz").value)
         if obs_rate_hz <= 0.0 or vis_rate_hz <= 0.0:
             raise ValueError("obs_rate_hz and vis_rate_hz must be positive")
+        self._action_abs_limit = _finite_limit_vector(
+            self.get_parameter("action_abs_limit").value,
+            length=6,
+            name="action_abs_limit",
+        )
+        if bool((self._action_abs_limit > 1.0).any()):
+            raise ValueError("action_abs_limit values must not exceed 1.0")
+        self._pwm_abs_limit = float(
+            self.get_parameter("pwm_abs_limit").value
+        )
+        self._pwm_slew_rate_per_s = float(
+            self.get_parameter("pwm_slew_rate_per_s").value
+        )
+        if (
+            not torch.isfinite(torch.tensor(self._pwm_abs_limit))
+            or not 0.0 < self._pwm_abs_limit <= 1.0
+        ):
+            raise ValueError("pwm_abs_limit must be finite and in (0, 1]")
+        if (
+            not torch.isfinite(torch.tensor(self._pwm_slew_rate_per_s))
+            or self._pwm_slew_rate_per_s < 0.0
+        ):
+            raise ValueError(
+                "pwm_slew_rate_per_s must be finite and non-negative"
+            )
+        self._pwm_max_delta = (
+            None
+            if self._pwm_slew_rate_per_s == 0.0
+            else self._pwm_slew_rate_per_s / obs_rate_hz
+        )
+        self._last_sent_pwm = torch.zeros(8, dtype=torch.float32)
         self._vis_every_n = max(1, round(obs_rate_hz / vis_rate_hz))
         self._obs_count = 0
+        # Fail closed until an explicit current-session signal is received.
+        # /brov/control_active is intentionally volatile, and base republishes
+        # it continuously while running.
+        self._control_active = False
+        self._discard_next_active_observation = False
 
         self.policy = PolicyRunner(policy_path, device="cpu")
         vehicle_config = str(self.get_parameter("vehicle_config").value)
@@ -92,13 +161,40 @@ class PolicyNode(Node):
         self.pub_pwm = self.create_publisher(
             Float32MultiArray, "/brov/thruster_pwm", 10
         )
+        self.pub_preview = self.create_publisher(
+            Float32MultiArray,
+            "/brov/policy/thruster_pwm_preview",
+            10,
+        )
         self.sub_obs = self.create_subscription(
             Float32MultiArray,
             "/brov/observation",
             self._on_observation,
-            10,
+            1,
         )
-        self.get_logger().info(f"policy loaded: {policy_path}")
+        self.sub_active = self.create_subscription(
+            Bool,
+            "/brov/control_active",
+            self._on_control_active,
+            1,
+        )
+        self.get_logger().info(
+            f"policy loaded in preview mode: {policy_path}; actual PWM waits "
+            "for /brov/control_active=true"
+        )
+
+    def _on_control_active(self, message: Bool) -> None:
+        active = bool(message.data)
+        if active and not self._control_active:
+            # Observation and enable are different ROS topics.  A depth-one
+            # queue plus one discarded sample keeps an in-flight preview from
+            # becoming a live command after the enable edge.
+            self._discard_next_active_observation = True
+            self._last_sent_pwm.zero_()
+        if not active:
+            self._discard_next_active_observation = False
+            self._last_sent_pwm.zero_()
+        self._control_active = active
 
     def _on_observation(self, message: Float32MultiArray) -> None:
         if len(message.data) != 16:
@@ -114,14 +210,29 @@ class PolicyNode(Node):
             )
             return
 
-        desired_wrench = _WRENCH_SCALE * action
+        limited_action = torch.maximum(
+            torch.minimum(action, self._action_abs_limit),
+            -self._action_abs_limit,
+        )
+        desired_wrench = _WRENCH_SCALE * limited_action
         desired_force = self.allocation_pinv @ desired_wrench
-        pwm = self.thruster.inverse_thrust(
+        requested_pwm = self.thruster.inverse_thrust(
             desired_force.unsqueeze(0)
         ).squeeze(0)
+        pwm = _limit_pwm_step(
+            requested_pwm,
+            self._last_sent_pwm,
+            absolute_limit=self._pwm_abs_limit,
+            max_delta=self._pwm_max_delta,
+        )
 
-        self.pub_action.publish(Float32MultiArray(data=action.tolist()))
-        self.pub_pwm.publish(Float32MultiArray(data=pwm.tolist()))
+        self.pub_action.publish(Float32MultiArray(data=limited_action.tolist()))
+        self.pub_preview.publish(Float32MultiArray(data=pwm.tolist()))
+        if self._control_active and self._discard_next_active_observation:
+            self._discard_next_active_observation = False
+        elif self._control_active:
+            self.pub_pwm.publish(Float32MultiArray(data=pwm.tolist()))
+            self._last_sent_pwm = pwm.detach().clone()
 
         self._obs_count += 1
         if self._obs_count % self._vis_every_n == 0:
