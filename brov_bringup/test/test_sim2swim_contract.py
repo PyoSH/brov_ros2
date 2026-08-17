@@ -37,18 +37,21 @@ def _yaml_parameters(name: str, node_name: str) -> dict:
     return document[node_name]["ros__parameters"]
 
 
-def _context(case: str, allow_case_c: str) -> LaunchContext:
+def _context(case: str, allow_case_c: str, controller: str = "rl") -> LaunchContext:
     context = LaunchContext()
     context.launch_configurations["case"] = case
     context.launch_configurations["allow_case_c"] = allow_case_c
+    context.launch_configurations["controller"] = controller
     return context
 
 
-def _selected_include(module, case: str, allow_case_c: str):
+def _selected_include(module, case: str, allow_case_c: str, controller: str = "rl"):
     module.get_package_share_directory = lambda package: (
         str(PACKAGE_ROOT) if package == "brov_bringup" else f"/share/{package}"
     )
-    actions = module._include_selected_case(_context(case, allow_case_c))
+    actions = module._include_selected_case(
+        _context(case, allow_case_c, controller)
+    )
     assert len(actions) == 1
     include = actions[0]
     assert isinstance(include, IncludeLaunchDescription)
@@ -293,6 +296,31 @@ def test_case_selects_rl_pool_profile(
     else:
         assert Path(arguments["safety_config"]) == Path(safety_config)
     assert Path(arguments["rl_config"]) == Path(rl_config)
+
+
+@pytest.mark.parametrize("case", ["a", "c"])
+def test_case_selects_rl_mk2_conservative_profile(case: str) -> None:
+    module = _load_launch_module()
+    allow_case_c = "true" if case == "c" else "false"
+    include = _selected_include(
+        module, case, allow_case_c, controller="rl_mk2"
+    )
+    arguments = dict(include.launch_arguments)
+
+    assert arguments["controller"] == "rl_mk2"
+    assert Path(arguments["rl_config"]).name == "rl_controller_mk2_real_v1.yaml"
+    assert Path(arguments["rl_mk2_config"]).name == "rl_controller_mk2_real_v1.yaml"
+    assert Path(arguments["rl_config"]).parent.name == "config"
+
+
+def test_unknown_controller_is_rejected() -> None:
+    module = _load_launch_module()
+    module.get_package_share_directory = lambda package: (
+        str(PACKAGE_ROOT) if package == "brov_bringup" else f"/share/{package}"
+    )
+
+    with pytest.raises(RuntimeError, match="controller must be exactly one of"):
+        module._include_selected_case(_context("a", "false", controller="model"))
 
 
 def test_wrapper_reuses_pool_launch_and_has_no_automation() -> None:

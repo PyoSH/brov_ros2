@@ -116,7 +116,7 @@ def test_pool_profile_is_safe_and_forces_both_gates(monkeypatch) -> None:
     assert forwarded["require_resolved_mission"] == "true"
 
 
-def test_pool_profile_has_required_nodes_and_exactly_two_controller_branches() -> None:
+def test_pool_profile_has_required_nodes_and_exactly_three_controller_branches() -> None:
     nodes = _node_literals(POOL_LAUNCH)
     source = POOL_LAUNCH.read_text(encoding="utf-8")
 
@@ -131,9 +131,19 @@ def test_pool_profile_has_required_nodes_and_exactly_two_controller_branches() -
         ("brov_control", "model_based_controller_node")
     ) == 1
     assert nodes.count(("brov_control", "policy_node")) == 1
+    assert nodes.count(("brov_control", "policy_node_mk2")) == 1
     assert "condition=model_selected" in source
     assert "condition=rl_selected" in source
+    assert "condition=rl_mk2_selected" in source
     assert "condition=IfCondition(demo_orchestrator)" in source
+
+
+def test_pool_profile_rl_mk2_defaults_to_conservative_real_envelope(
+    monkeypatch,
+) -> None:
+    defaults = _defaults(_description(POOL_LAUNCH, "pool_launch_mk2", monkeypatch))
+    assert defaults["controller"] in {"model", "rl", "rl_mk2"}
+    assert Path(defaults["rl_mk2_config"]).name == "rl_controller_mk2_real_v1.yaml"
 
 
 def test_launch_contains_no_automatic_service_or_process_action() -> None:

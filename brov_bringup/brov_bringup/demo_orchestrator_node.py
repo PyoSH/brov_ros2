@@ -142,8 +142,10 @@ class DemoOrchestratorNode(Node):
         self._controller = str(
             self.get_parameter("controller").value
         ).strip().lower()
-        if self._controller not in {"model", "rl"}:
-            raise ValueError("controller must be exactly 'model' or 'rl'")
+        if self._controller not in {"model", "rl", "rl_mk2"}:
+            raise ValueError(
+                "controller must be exactly 'model', 'rl', or 'rl_mk2'"
+            )
         self._demo_case = str(
             self.get_parameter("demo_case").value
         ).strip().lower()

@@ -36,6 +36,12 @@ _CASE_PROFILES = {
         "rl_config": "rl_controller_sim2swim_c.yaml",
     },
 }
+# MK2 uses one conservative real-water envelope for both cases -- its
+# observation contract (brov_velocity_observation_v2) is already what
+# brov_obs_node/LOSGuidance build for every case regardless of controller;
+# only the action side (T6 frame transform, applied by policy_node_mk2)
+# differs from the legacy per-case rl_config above.
+_MK2_RL_CONFIG = ("brov_control", "rl_controller_mk2_real_v1.yaml")
 
 
 def _is_true(value: str) -> bool:
@@ -58,6 +64,11 @@ def _include_selected_case(context):
             "reading docs/SIM2SWIM_DEMO.md and satisfying its staged "
             "random-attitude acceptance gate"
         )
+    selected_controller = (
+        LaunchConfiguration("controller").perform(context).strip().lower()
+    )
+    if selected_controller not in {"rl", "rl_mk2"}:
+        raise RuntimeError("controller must be exactly one of: rl, rl_mk2")
 
     profile = _CASE_PROFILES[selected_case]
     forwarded_arguments = {
@@ -81,9 +92,27 @@ def _include_selected_case(context):
             "require_resolved_mission",
         )
     }
+    if selected_controller == "rl_mk2":
+        rl_package, rl_config_file = _MK2_RL_CONFIG
+        rl_config_path = os.path.join(
+            control_share if rl_package == "brov_control" else bringup_share,
+            "config",
+            rl_config_file,
+        )
+    else:
+        rl_config_path = os.path.join(
+            (
+                control_share
+                if profile["rl_package"] == "brov_control"
+                else bringup_share
+            ),
+            "config",
+            profile["rl_config"],
+        )
+
     forwarded_arguments.update(
         {
-            "controller": "rl",
+            "controller": selected_controller,
             "demo_case": selected_case,
             "auto_generate_case_a_path": (
                 "true" if selected_case == "a" else "false"
@@ -105,17 +134,14 @@ def _include_selected_case(context):
                 if selected_case == "c"
                 else LaunchConfiguration("safety_config")
             ),
-            "rl_config": os.path.join(
-                (
-                    control_share
-                    if profile["rl_package"] == "brov_control"
-                    else bringup_share
-                ),
-                "config",
-                profile["rl_config"],
-            ),
+            "rl_config": rl_config_path,
         }
     )
+    if selected_controller == "rl_mk2":
+        # pool_localized_demo.launch.py routes controller=rl_mk2 to
+        # policy_node_mk2 via rl_mk2_config, not rl_config -- forward the
+        # same resolved path under that name too.
+        forwarded_arguments["rl_mk2_config"] = rl_config_path
     return [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -149,6 +175,18 @@ def generate_launch_description() -> LaunchDescription:
                 description=(
                     "Resolved Sim2Swim profile: (a) takeoff+align loop or "
                     "(c) random-attitude-v2."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "controller",
+                default_value="rl",
+                choices=["rl", "rl_mk2"],
+                description=(
+                    "rl uses the legacy policy_node/rl_config in each case "
+                    "profile above; rl_mk2 uses policy_node_mk2 with the "
+                    "conservative rl_controller_mk2_real_v1.yaml envelope "
+                    "for both cases (same 16-D observation contract either "
+                    "way -- only the action-side T6 transform differs)."
                 ),
             ),
             DeclareLaunchArgument(

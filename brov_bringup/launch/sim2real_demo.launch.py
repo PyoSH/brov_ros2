@@ -28,8 +28,8 @@ def _is_true(value: str) -> bool:
 
 def _validate_options(context):
     controller = LaunchConfiguration("controller").perform(context).strip().lower()
-    if controller not in {"model", "rl"}:
-        raise RuntimeError("controller must be exactly one of: model, rl")
+    if controller not in {"model", "rl", "rl_mk2"}:
+        raise RuntimeError("controller must be exactly one of: model, rl, rl_mk2")
     if _is_true(LaunchConfiguration("aruco").perform(context)) and not _is_true(
         LaunchConfiguration("camera").perform(context)
     ):
@@ -77,6 +77,9 @@ def generate_launch_description() -> LaunchDescription:
     rl_selected = IfCondition(
         PythonExpression(["'", controller, "'.lower() == 'rl'"])
     )
+    rl_mk2_selected = IfCondition(
+        PythonExpression(["'", controller, "'.lower() == 'rl_mk2'"])
+    )
 
     return LaunchDescription(
         [
@@ -104,6 +107,18 @@ def generate_launch_description() -> LaunchDescription:
                 "rl_config",
                 default_value=os.path.join(
                     control_share, "config", "rl_controller.yaml"
+                ),
+            ),
+            DeclareLaunchArgument(
+                "rl_mk2_config",
+                default_value=os.path.join(
+                    control_share, "config", "rl_controller_mk2_real_v1.yaml"
+                ),
+                description=(
+                    "MK2 policy_node_mk2 parameters. Defaults to the "
+                    "conservative first-water-test envelope -- do not point "
+                    "this at rl_controller_mk2_deploy_v2.yaml (Gazebo-only, "
+                    "no action/PWM limiting) for a real-vehicle run."
                 ),
             ),
             DeclareLaunchArgument(
@@ -144,7 +159,9 @@ def generate_launch_description() -> LaunchDescription:
                 ),
             ),
             DeclareLaunchArgument(
-                "controller", default_value="model", choices=["model", "rl"]
+                "controller",
+                default_value="model",
+                choices=["model", "rl", "rl_mk2"],
             ),
             DeclareLaunchArgument(
                 "policy_path", default_value=os.environ.get("BROV_POLICY_PATH", "")
@@ -184,6 +201,18 @@ def generate_launch_description() -> LaunchDescription:
                     {"policy_path": ParameterValue(policy_path, value_type=str)},
                 ],
                 condition=rl_selected,
+            ),
+            Node(
+                package="brov_control",
+                executable="policy_node_mk2",
+                name="brov_policy_node",
+                output="screen",
+                emulate_tty=True,
+                parameters=[
+                    LaunchConfiguration("rl_mk2_config"),
+                    {"policy_path": ParameterValue(policy_path, value_type=str)},
+                ],
+                condition=rl_mk2_selected,
             ),
             GroupAction(
                 condition=IfCondition(camera),

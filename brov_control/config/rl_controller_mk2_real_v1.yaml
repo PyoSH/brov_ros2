@@ -1,0 +1,24 @@
+brov_policy_node:
+  ros__parameters:
+    # Conservative first-water-test envelope for MK2 policies
+    # (deploy_v4/deploy_v5) on the real vehicle. Values reused from the
+    # earlier sim2swim case-c real-water envelope
+    # (rl_controller_sim2swim_c.yaml) rather than invented fresh -- that
+    # config's own comment is the reason: "Do not enlarge these values
+    # until staged, restrained single-axis tests establish hull/tether
+    # clearance and acceptable transients."
+    #
+    # Gazebo diagnostics in this investigation found the remaining raw-actor
+    # saturation concentrated almost entirely in pitch/yaw (surge/sway/
+    # heave/roll near zero overflow) -- but that is a Gazebo-only finding
+    # and must not be assumed to hold on the real vehicle. All six axes stay
+    # conservative here; do not narrow the limiting to pitch/yaw alone
+    # without real-water evidence.
+    policy_path: ""
+    policy_metadata_path: ""
+    vehicle_config: ""
+    obs_rate_hz: 25.0
+    vis_rate_hz: 2.0
+    action_abs_limit: [0.3, 0.3, 0.3, 0.2, 0.15, 0.2]
+    pwm_abs_limit: 0.35
+    pwm_slew_rate_per_s: 0.4

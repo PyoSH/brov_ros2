@@ -105,6 +105,23 @@ def test_mk2_bundle_accepts_deploy_v4_profile(tmp_path) -> None:
     assert contract.profile == "deploy_v4"
 
 
+def test_mk2_bundle_accepts_deploy_v5_profile(tmp_path) -> None:
+    policy, sidecar, vehicle = _mk2_bundle(tmp_path)
+    payload = json.loads(sidecar.read_text(encoding="utf-8"))
+    payload["profile"] = "deploy_v5"
+    sidecar.write_text(json.dumps(payload), encoding="utf-8")
+
+    contract = resolve_policy_artifact_contract(
+        policy,
+        requested_action_contract=MK2_ACTION_CONTRACT,
+        metadata_path=sidecar,
+        vehicle_model_path=vehicle,
+    )
+
+    assert contract.metadata_verified
+    assert contract.profile == "deploy_v5"
+
+
 def test_mk2_missing_metadata_fails_closed(tmp_path) -> None:
     policy = tmp_path / "policy.pt"
     policy.write_bytes(b"no-sidecar")
