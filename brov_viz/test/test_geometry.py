@@ -51,12 +51,12 @@ def test_surveyed_marker_axes_match_observed_opencv_axes() -> None:
 
 def test_marker_black_square_fits_nominal_pool() -> None:
     # Marker +X is pool +Y and marker +Y is pool -Z.
-    center = (3.8, 0.85, 0.24)
+    center = (3.95, 0.85, 0.35)
     half = 0.42 / 2.0
     assert center[1] - half == pytest.approx(0.64)
     assert center[1] + half == pytest.approx(1.06)
-    assert center[2] - half == pytest.approx(0.03)
-    assert center[2] + half == pytest.approx(0.45)
+    assert center[2] - half == pytest.approx(0.14)
+    assert center[2] + half == pytest.approx(0.56)
     assert inside_pool(center, [4.0, 1.7, 1.1])
 
 

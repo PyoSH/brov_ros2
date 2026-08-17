@@ -41,7 +41,7 @@ def test_deployed_marker_contract_is_apriltag_16h5_id2() -> None:
     assert parameters["publish_pool_pose"] is True
     assert parameters["pool_frame"] == "pool"
     assert parameters["pool_to_marker_xyz"] == pytest.approx(
-        [3.8, 0.85, 0.24]
+        [3.95, 0.85, 0.35]
     )
     assert parameters["pool_to_marker_quaternion_xyzw"] == pytest.approx(
         [-0.5, -0.5, 0.5, 0.5]
@@ -194,7 +194,7 @@ def test_marker_relative_robot_pose_closes_transform_chain() -> None:
 
 def test_pool_relative_robot_pose_recovers_nontrivial_base_pose() -> None:
     transform_pool_marker = _validated_pool_marker_transform(
-        [3.8, 0.85, 0.24], [-0.5, -0.5, 0.5, 0.5]
+        [3.95, 0.85, 0.35], [-0.5, -0.5, 0.5, 0.5]
     )
     transform_base_camera = _validated_extrinsic(
         [0.15751251578330994, 0.0052856863476336, 0.06784216314554214],
@@ -220,7 +220,7 @@ def test_pool_relative_robot_pose_recovers_nontrivial_base_pose() -> None:
 def test_head_on_marker_recovers_pool_aligned_base_pose() -> None:
     """Golden case: a level robot faces the marker along pool +X."""
     transform_pool_marker = _validated_pool_marker_transform(
-        [3.8, 0.85, 0.24], [-0.5, -0.5, 0.5, 0.5]
+        [3.95, 0.85, 0.35], [-0.5, -0.5, 0.5, 0.5]
     )
     transform_base_camera = _validated_extrinsic(
         [0.15751251578330994, 0.0052856863476336, 0.06784216314554214],
@@ -242,7 +242,7 @@ def test_head_on_marker_recovers_pool_aligned_base_pose() -> None:
 
     np.testing.assert_allclose(actual_pool_base[:3, :3], np.eye(3), atol=1e-12)
     np.testing.assert_allclose(
-        actual_pool_base[:3, 3], [2.0, 0.85, 0.24], atol=1e-12
+        actual_pool_base[:3, 3], [2.15, 0.85, 0.35], atol=1e-12
     )
     np.testing.assert_allclose(
         actual_pool_base @ transform_base_camera @ transform_camera_marker,
@@ -254,10 +254,10 @@ def test_head_on_marker_recovers_pool_aligned_base_pose() -> None:
 @pytest.mark.parametrize(
     ("xyz", "quaternion"),
     [
-        ([3.8, 0.85], [-0.5, -0.5, 0.5, 0.5]),
-        ([3.8, 0.85, float("nan")], [-0.5, -0.5, 0.5, 0.5]),
-        ([3.8, 0.85, 0.24], [0.0, 0.0, 0.0, 0.0]),
-        ([3.8, 0.85, 0.24], [1.0, 1.0, 1.0, 1.0]),
+        ([3.95, 0.85], [-0.5, -0.5, 0.5, 0.5]),
+        ([3.95, 0.85, float("nan")], [-0.5, -0.5, 0.5, 0.5]),
+        ([3.95, 0.85, 0.35], [0.0, 0.0, 0.0, 0.0]),
+        ([3.95, 0.85, 0.35], [1.0, 1.0, 1.0, 1.0]),
     ],
 )
 def test_invalid_pool_marker_survey_is_rejected(xyz, quaternion) -> None:

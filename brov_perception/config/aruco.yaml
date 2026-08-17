@@ -19,7 +19,7 @@ brov_aruco_pose_node:
 
     # Surveyed pool frame: origin at the near/right floor corner, +X along the
     # nominal 4.0 m pool length, +Y left, +Z up. The marker centre is at
-    # x=3.8 m on the far end. Its printed page top is +pool Z and its face
+    # x=3.95 m on the far end. Its printed page top is +pool Z and its face
     # normal is -pool X. The runtime drawFrameAxes observation is authoritative
     # for the decoded marker frame: +X=pool +Y, +Y=pool -Z, +Z=pool -X. The
     # printed bitmap is therefore 180 deg in-plane from the earlier assumption.

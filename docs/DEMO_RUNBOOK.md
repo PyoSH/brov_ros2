@@ -158,7 +158,7 @@ is ignored and the orientation is derived from the CV optical convention.
 
 The model-derived extrinsic assumes `base_link` equals the USD robot root and
 is valid only with tilt locked neutral. The deployed marker survey fixes the
-black-square centre at pool `[3.80, 0.85, 0.24]` m, with printed page top along
+black-square centre at pool `[3.95, 0.85, 0.35]` m, with printed page top along
 pool `+Z` and the marker face normal along pool `-X`. Runtime OpenCV axes show
 decoded marker `+X=pool +Y`, `+Y=pool -Z`, and `+Z=pool -X`; this measured axis
 contract, rather than the page label alone, defines the configured quaternion.

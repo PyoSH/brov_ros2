@@ -100,6 +100,11 @@ InteractiveMarker 기반 3-D waypoint 편집 및 continuous fusion의 후속 방
 분리해 기록한다. continuous localization fusion과 waypoint editor는 여전히
 roadmap 범위다.
 
+IsaacLab 학습/평가와 Gazebo SITL·실기 배포 사이에서 확인된 차이, rosbag 관측,
+Ubuntu 22.04/ROS 2 Humble 환경의 fresh clone/build 절차, sim2sim 분해 실험 및
+재학습 요구사항은
+[docs/SIM2SIM_RETRAINING_HANDOFF.md](docs/SIM2SIM_RETRAINING_HANDOFF.md)에 기록한다.
+
 ## Packages and executables
 
 ```text

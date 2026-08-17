@@ -16,7 +16,7 @@ def test_launch_uses_the_perception_marker_survey_as_single_source() -> None:
     )
     assert survey == {
         "pool_frame": "pool",
-        "marker_xyz": pytest.approx([3.8, 0.85, 0.24]),
+        "marker_xyz": pytest.approx([3.95, 0.85, 0.35]),
         "marker_quaternion_xyzw": pytest.approx([-0.5, -0.5, 0.5, 0.5]),
         "marker_size_m": pytest.approx(0.42),
         "marker_label": "APRILTAG_16h5 ID 2",

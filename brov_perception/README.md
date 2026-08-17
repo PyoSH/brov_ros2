@@ -73,7 +73,7 @@ canonical `marker -> base_link` TF edge.
 
 The pool origin is the near/right floor corner. Its axes are +x toward the far
 marker wall, +y left while looking along +x, and +z up. AprilTag ID 2 is fixed
-to the far wall with its black-square centre at `[3.80, 0.85, 0.24]` metres.
+to the far wall with its black-square centre at `[3.95, 0.85, 0.35]` metres.
 The printed page top points along pool +z and the printed face points into the
 pool, along pool -x. The OpenCV debug overlay for this physical print shows the
 decoded marker +x axis toward pool +y and decoded +y toward pool -z. In other
@@ -81,7 +81,7 @@ words, the decoded marker frame is rotated 180 degrees in-plane relative to the
 previous assumption based only on the printed page top. Therefore:
 
 ```yaml
-pool_to_marker_xyz: [3.8, 0.85, 0.24]
+pool_to_marker_xyz: [3.95, 0.85, 0.35]
 pool_to_marker_quaternion_xyzw: [-0.5, -0.5, 0.5, 0.5]
 ```
 
