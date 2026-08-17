@@ -1,0 +1,15 @@
+brov_policy_node:
+  ros__parameters:
+    # The bringup launch must supply an installed/exported policy artifact.
+    # An empty default fails closed instead of silently loading a stale model.
+    policy_path: ""
+    vehicle_config: ""
+    obs_rate_hz: 25.0
+    vis_rate_hz: 2.0
+    # Operational envelope applied after policy inference.  Defaults preserve
+    # the exported policy contract; high-risk mission profiles must override
+    # these with stricter limits.
+    action_abs_limit: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    pwm_abs_limit: 1.0
+    # 0 disables slew limiting for legacy profiles.
+    pwm_slew_rate_per_s: 0.0

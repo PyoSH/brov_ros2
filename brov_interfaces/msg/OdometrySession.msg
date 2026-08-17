@@ -1,0 +1,2 @@
+nav_msgs/Odometry odometry
+string odometry_session_id

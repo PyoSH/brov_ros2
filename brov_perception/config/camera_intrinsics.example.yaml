@@ -1,0 +1,23 @@
+# Example/schema only; all-zero focal lengths intentionally mark it uncalibrated.
+# Copy a real calibration to $BROV_DATA_DIR/calibration/camera_intrinsics.yaml
+# or ~/.ros/brov/calibration/camera_intrinsics.yaml.
+image_width: 640
+image_height: 480
+camera_name: brov_camera
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [0.0, 0.0, 0.0, 0.0, 0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]

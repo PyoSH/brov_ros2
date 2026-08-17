@@ -1,0 +1,13 @@
+brov_obs_node:
+  ros__parameters:
+    # Docker Desktop host-networking 경로에서 검증된 BlueOS UDP server 주소.
+    connection: "udpout:192.168.2.2:14550"
+    thruster_reversal_profile: "real_brov2"
+
+    # 안전 기본값: launch만으로는 실제 PWM 송신이나 arm을 수행하지 않는다.
+    send_pwm: false
+    arm: false
+
+    camera_tilt_min_deg: -45.0
+    camera_tilt_max_deg: 45.0
+    camera_tilt_max_rate_deg_s: 30.0

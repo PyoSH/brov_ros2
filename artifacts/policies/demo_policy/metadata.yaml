@@ -1,0 +1,22 @@
+artifact_version: 1
+name: brov_demo_policy
+format: torchscript
+file: policy.pt
+sha256: 0d89f3270f46214f1569b7d48dcb5e25363b1d9b7353b82ced0fc67c0093a472
+input:
+  shape: [1, 16]
+  observation_schema: brov_velocity_observation_v1
+  fields:
+    - q_error_wxyz
+    - velocity_error_body_zup
+    - angular_velocity_body_zup
+    - velocity_error_integral
+    - quaternion_vector_error_integral
+output:
+  shape: [1, 6]
+  action_order: [surge, sway, heave, roll, pitch, yaw]
+  range: [-1.0, 1.0]
+vehicle_model_sha256: 8bb397f4a8a0d50c11bfaf1f88143b4375b84dbd77f41fbe7c512ced1b15be12
+notes:
+  - Quaternion error is canonicalized to w >= 0 in the current runtime.
+  - Real-vehicle revalidation remains required after observation fixes.

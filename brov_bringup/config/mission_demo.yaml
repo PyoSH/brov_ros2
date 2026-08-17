@@ -1,0 +1,13 @@
+brov_obs_node:
+  ros__parameters:
+    waypoints: "0,0,0;0,0,-0.5;1,0,-0.5"
+    waypoint_frame: "start_heading"
+    heading_mode: "straight"
+    cruise_speed: 0.1
+    loop: false
+    reach_threshold: 0.15
+    lookahead_dist: 1.0
+    depth_hold_kp: 0.8
+    depth_speed_limit: 0.1
+    terminal_hold_kp: 0.5
+    terminal_speed_limit: 0.1

@@ -1,0 +1,21 @@
+brov_obs_node:
+  ros__parameters:
+    # Stage-1 gap isolation: settle 0.20 m below the START depth, then fly one
+    # 5 m horizontal leg.  No reversal is included, so the steady velocity
+    # response is not mixed with the 180-degree Case-A transition.
+    waypoints: "0,0,0;0,0,0.20;5.0,0,0.20"
+    waypoint_frame: "start_heading"
+    heading_mode: "takeoff_then_align"
+    loop: false
+
+    cruise_speed: 0.50
+    lookahead_dist: 1.0
+    reach_threshold: 0.50
+    depth_hold_kp: 0.8
+    depth_speed_limit: 0.05
+    terminal_hold_kp: 0.5
+    terminal_speed_limit: 0.05
+
+    waypoint_bounds_enabled: true
+    waypoint_min_xyz: [0.0, 0.0, 0.0]
+    waypoint_max_xyz: [5.0, 0.0, 0.20]

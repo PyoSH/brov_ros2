@@ -1,0 +1,13 @@
+brov_policy_node:
+  ros__parameters:
+    # MK2 uses the separate policy_node_mk2 executable.  Its T6 contract is
+    # fixed in code and must match the verified sibling metadata JSON.
+    policy_path: ""
+    policy_metadata_path: ""
+    vehicle_config: ""
+    obs_rate_hz: 25.0
+    vis_rate_hz: 2.0
+    action_abs_limit: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    pwm_abs_limit: 1.0
+    # The Isaac MK2 candidate was trained without a runtime PWM slew limiter.
+    pwm_slew_rate_per_s: 0.0

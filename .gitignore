@@ -1,0 +1,29 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+*.egg-info/
+.eggs/
+.coverage
+htmlcov/
+
+# colcon workspace products
+build/
+install/
+log/
+build_mk2/
+install_mk2/
+log_mk2/
+
+# Runtime output is machine/experiment-specific.
+runtime/calibration/*
+runtime/bags/*
+runtime/logs/*
+runtime/experiments/*
+!runtime/calibration/README.md
+!runtime/bags/README.md
+!runtime/logs/README.md
+!runtime/experiments/README.md

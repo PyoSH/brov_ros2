@@ -1,0 +1,18 @@
+brov_obs_node:
+  ros__parameters:
+    # Edo Gazebo SITL maps RC1..8 directly to thruster1..8.  Keep output and
+    # arming disabled until the operator explicitly enables the closed loop.
+    connection: "udpin:0.0.0.0:14552"
+    thruster_reversal_profile: "edo_sitl_identity"
+    feedback_source: "mavlink_ekf"
+    gazebo_truth_logging_enabled: false
+    gazebo_truth_topic: "/brov/sim/gazebo_odometry_raw"
+    gazebo_truth_max_age_s: 0.12
+    gazebo_truth_frame: "odom"
+    gazebo_truth_child_frame: "base_link"
+    send_pwm: false
+    arm: false
+
+    camera_tilt_min_deg: -45.0
+    camera_tilt_max_deg: 45.0
+    camera_tilt_max_rate_deg_s: 30.0

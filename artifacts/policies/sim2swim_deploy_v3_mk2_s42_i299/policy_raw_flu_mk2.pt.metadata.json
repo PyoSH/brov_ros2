@@ -1,0 +1,32 @@
+{
+  "action_contract": "explicit_flu_zup_to_sname_frd_v1",
+  "action_order": [
+    "surge",
+    "sway",
+    "heave",
+    "roll",
+    "pitch",
+    "yaw"
+  ],
+  "allocation_frame": "body_frd_sname",
+  "artifact_id": "sim2swim_deploy_v3_mk2_s42_i299",
+  "checkpoint": "deploy_v3_2048x128_seed42_20260818/model_299.pt",
+  "checkpoint_contract_verified": true,
+  "checkpoint_sha256": "059e25f83def9102b879e0dc45e669118cf62cbd617488577f7c3de2e911646d",
+  "command_profile": "deploy_v3",
+  "input_dim": 16,
+  "observation_contract": "brov_velocity_observation_v2",
+  "output_dim": 6,
+  "policy": "policy_raw_flu_mk2.pt",
+  "policy_frame": "body_flu_zup",
+  "policy_sha256": "65d5542c4387c0ec3baea5814f6cf2ee6f1f049eb6a0d869636bed1d24f9012c",
+  "profile": "deploy_v3",
+  "required_executable": "policy_node_mk2",
+  "reward_profile": "deploy_v2",
+  "runtime_action_clip": [-1.0, 1.0],
+  "schema": "brov_torchscript_policy_v2",
+  "seed": 42,
+  "training_manifest_sha256": "65edd2f9185d6488e470422e3c5cb80e82eb431526884585ace093ed1bbd91fc",
+  "vehicle_model_sha256": "8bb397f4a8a0d50c11bfaf1f88143b4375b84dbd77f41fbe7c512ced1b15be12",
+  "wrench_scale": [85.0, 85.0, 120.0, 26.0, 14.0, 22.0]
+}

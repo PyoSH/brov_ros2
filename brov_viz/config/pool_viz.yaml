@@ -1,0 +1,11 @@
+brov_pool_scene:
+  ros__parameters:
+    # Survey convention: near/right/floor corner, +X far, +Y left, +Z up.
+    pool_size_xyz: [4.0, 1.7, 1.1]
+    pose_timeout_s: 0.5
+
+    # A translucent proxy derived from the BROV2 USD visual bounds. The
+    # offset is expressed in base_link FLU and avoids pretending that the USD
+    # visual-box centre is the base_link origin.
+    robot_visual_size_xyz: [0.45976624, 0.57254642, 0.40049667]
+    robot_visual_center_xyz: [-0.00036876, 0.00521591, -0.059202215]

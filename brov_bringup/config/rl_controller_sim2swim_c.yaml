@@ -1,0 +1,16 @@
+brov_policy_node:
+  ros__parameters:
+    # The launch supplies the exported TorchScript artifact separately.
+    policy_path: ""
+    vehicle_config: ""
+    obs_rate_hz: 25.0
+    vis_rate_hz: 2.0
+
+    # Conservative first-water-test envelope for random-attitude v2.  Do not
+    # enlarge these values until staged, restrained single-axis tests establish
+    # hull/tether clearance and acceptable transients.
+    action_abs_limit: [0.25, 0.25, 0.30, 0.15, 0.15, 0.15]
+    pwm_abs_limit: 0.35
+    # Stricter than the 0.50/s gateway rejection threshold so ordinary
+    # scheduling/DDS jitter does not trip two equal floating-point boundaries.
+    pwm_slew_rate_per_s: 0.40
