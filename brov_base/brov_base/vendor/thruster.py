@@ -89,6 +89,8 @@ class BROV2ThrusterModel:
     _MAX_RPM  = 3900.0
     _DEADBAND = 0.075
     _TAU      = 0.05     # 1차 지연 시정수 [s]
+    _MAX_FORWARD_THRUST = 64.1
+    _MAX_REVERSE_THRUST = -51.5
 
     def __init__(
         self,
@@ -165,6 +167,15 @@ class BROV2ThrusterModel:
         # SNAME → Z-up 변환 후 반환
         return forces_ned * self._t3, torques_ned * self._t3
 
+    def clamp_thrust(self, force: torch.Tensor) -> torch.Tensor:
+        """Apply the exact asymmetric T200 force envelope used by inversion."""
+
+        k = self._KF / 4.4e-7 * 9.81
+        return force.clamp(
+            self._MAX_REVERSE_THRUST * k / 9.81,
+            self._MAX_FORWARD_THRUST * k / 9.81,
+        )
+
     def inverse_thrust(self, force: torch.Tensor) -> torch.Tensor:
         """희망 추력(N, 부호 있음) → pwm([-1,1]) 역산.
 
@@ -188,7 +199,7 @@ class BROV2ThrusterModel:
 
         # 안전 clamp — brov2_heavy.yaml의 실측 최대추력(정/역방향 비대칭) 근방으로 제한.
         # 기본 _KF에서는 k=9.81이라 그대로 64.1/-51.5가 되고, _KF가 바뀌면 함께 스케일된다.
-        force = force.clamp(-51.5 * k / 9.81, 64.1 * k / 9.81)
+        force = self.clamp_thrust(force)
 
         # ── 추력 → RPM (2차식 역산) ──
         # rpm>0: k*(4.7368e-7·rpm² - 1.9275e-4·rpm + 8.4452e-2) = force

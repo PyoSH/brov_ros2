@@ -10,11 +10,15 @@ active. ``brov_base`` owns MAVLink and the actual PWM gateway.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool, Float32MultiArray
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool, Float32MultiArray, String
 
+from brov_base.vendor import params as vehicle_params
 from brov_base.vendor.params import load_brov2_yaml, thruster_pos_dir_ned
 from brov_base.vendor.thruster import (
     BROV2ThrusterModel,
@@ -22,10 +26,16 @@ from brov_base.vendor.thruster import (
 )
 
 from .policy_runner import PolicyRunner
+from .policy_contract import (
+    LEGACY_ACTION_CONTRACT,
+    WRENCH_SCALE,
+    action_to_allocation_multiplier,
+    resolve_policy_artifact_contract,
+)
 
 
 # Must remain identical to the policy training environment's wrench limits.
-_WRENCH_SCALE = torch.tensor([85.0, 85.0, 120.0, 26.0, 14.0, 22.0])
+_WRENCH_SCALE = torch.tensor(WRENCH_SCALE)
 _ACTION_LABELS = ["surge", "sway ", "heave", "roll ", "pitch", "yaw  "]
 _BAR_WIDTH = 20
 
@@ -74,9 +84,13 @@ def _action_bar(label: str, value: float, width: int = _BAR_WIDTH) -> str:
 class PolicyNode(Node):
     """Run the exported end-to-end policy for each valid observation."""
 
+    _NODE_NAME = "brov_policy_node"
+    _POLICY_ACTION_CONTRACT = LEGACY_ACTION_CONTRACT
+
     def __init__(self):
-        super().__init__("brov_policy_node")
+        super().__init__(self._NODE_NAME)
         self.declare_parameter("policy_path", "")
+        self.declare_parameter("policy_metadata_path", "")
         self.declare_parameter("vehicle_config", "")
         self.declare_parameter("obs_rate_hz", 25.0)
         self.declare_parameter("vis_rate_hz", 2.0)
@@ -92,6 +106,7 @@ class PolicyNode(Node):
             raise ValueError(
                 "policy_path parameter is required and must point to policy.pt"
             )
+        metadata_path = str(self.get_parameter("policy_metadata_path").value)
         obs_rate_hz = float(self.get_parameter("obs_rate_hz").value)
         vis_rate_hz = float(self.get_parameter("vis_rate_hz").value)
         if obs_rate_hz <= 0.0 or vis_rate_hz <= 0.0:
@@ -135,8 +150,22 @@ class PolicyNode(Node):
         self._control_active = False
         self._discard_next_active_observation = False
 
-        self.policy = PolicyRunner(policy_path, device="cpu")
         vehicle_config = str(self.get_parameter("vehicle_config").value)
+        vehicle_model_path = (
+            vehicle_config
+            if vehicle_config
+            else str(Path(vehicle_params.__file__).with_name("brov2_heavy.yaml"))
+        )
+        self._policy_artifact = resolve_policy_artifact_contract(
+            policy_path,
+            requested_action_contract=self._POLICY_ACTION_CONTRACT,
+            metadata_path=metadata_path,
+            vehicle_model_path=vehicle_model_path,
+        )
+        self._policy_to_allocation = action_to_allocation_multiplier(
+            self._POLICY_ACTION_CONTRACT
+        )
+        self.policy = PolicyRunner(policy_path, device="cpu")
         yaml_params = (
             load_brov2_yaml(vehicle_config)
             if vehicle_config
@@ -150,13 +179,33 @@ class PolicyNode(Node):
             pos=thruster_pos,
             dir=thruster_dir,
         )
-        allocation_matrix = build_allocation_matrix(
+        self.allocation_matrix = build_allocation_matrix(
             self.thruster._pos, self.thruster._dir
         )
-        self.allocation_pinv = torch.linalg.pinv(allocation_matrix)
+        self.allocation_pinv = torch.linalg.pinv(self.allocation_matrix)
 
+        self.pub_action_raw = self.create_publisher(
+            Float32MultiArray, "/brov/policy/action_raw", 10
+        )
         self.pub_action = self.create_publisher(
             Float32MultiArray, "/brov/action", 10
+        )
+        self.pub_wrench_requested = self.create_publisher(
+            Float32MultiArray, "/brov/policy/wrench_requested", 10
+        )
+        self.pub_thruster_force_requested = self.create_publisher(
+            Float32MultiArray, "/brov/policy/thruster_force_requested", 10
+        )
+        self.pub_thruster_force_limited = self.create_publisher(
+            Float32MultiArray, "/brov/policy/thruster_force_limited", 10
+        )
+        self.pub_wrench_after_thruster_limit = self.create_publisher(
+            Float32MultiArray,
+            "/brov/policy/wrench_after_thruster_limit",
+            10,
+        )
+        self.pub_pwm_requested = self.create_publisher(
+            Float32MultiArray, "/brov/policy/thruster_pwm_requested", 10
         )
         self.pub_pwm = self.create_publisher(
             Float32MultiArray, "/brov/thruster_pwm", 10
@@ -165,6 +214,25 @@ class PolicyNode(Node):
             Float32MultiArray,
             "/brov/policy/thruster_pwm_preview",
             10,
+        )
+        artifact_qos = QoSProfile(depth=1)
+        artifact_qos.reliability = ReliabilityPolicy.RELIABLE
+        artifact_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.pub_artifact_contract = self.create_publisher(
+            String,
+            "/brov/policy/artifact_contract",
+            artifact_qos,
+        )
+        self._artifact_contract_message = String(
+            data=self._policy_artifact.to_json()
+        )
+        self._publish_artifact_contract()
+        # Re-publish at a low rate as well as using transient-local durability.
+        # This guarantees that generic rosbag/CLI volatile subscribers still
+        # capture deployment provenance even if discovery completes after the
+        # node's initial publication.
+        self._artifact_contract_timer = self.create_timer(
+            1.0, self._publish_artifact_contract
         )
         self.sub_obs = self.create_subscription(
             Float32MultiArray,
@@ -179,9 +247,15 @@ class PolicyNode(Node):
             1,
         )
         self.get_logger().info(
-            f"policy loaded in preview mode: {policy_path}; actual PWM waits "
-            "for /brov/control_active=true"
+            f"policy loaded in preview mode: {policy_path}; profile="
+            f"{self._policy_artifact.profile} action_contract="
+            f"{self._policy_artifact.action_contract} metadata_verified="
+            f"{self._policy_artifact.metadata_verified}; actual PWM waits for "
+            "/brov/control_active=true"
         )
+
+    def _publish_artifact_contract(self) -> None:
+        self.pub_artifact_contract.publish(self._artifact_contract_message)
 
     def _on_control_active(self, message: Bool) -> None:
         active = bool(message.data)
@@ -214,8 +288,15 @@ class PolicyNode(Node):
             torch.minimum(action, self._action_abs_limit),
             -self._action_abs_limit,
         )
-        desired_wrench = _WRENCH_SCALE * limited_action
+        # Policy output is FLU/Z-up for MK2, while B/B+ is SNAME/FRD.  The
+        # cached multiplier is identity only for the explicitly named legacy
+        # model_299 contract.
+        desired_wrench = (
+            _WRENCH_SCALE * limited_action * self._policy_to_allocation
+        )
         desired_force = self.allocation_pinv @ desired_wrench
+        limited_force = self.thruster.clamp_thrust(desired_force)
+        wrench_after_thruster_limit = self.allocation_matrix @ limited_force
         requested_pwm = self.thruster.inverse_thrust(
             desired_force.unsqueeze(0)
         ).squeeze(0)
@@ -226,7 +307,23 @@ class PolicyNode(Node):
             max_delta=self._pwm_max_delta,
         )
 
+        self.pub_action_raw.publish(Float32MultiArray(data=action.tolist()))
         self.pub_action.publish(Float32MultiArray(data=limited_action.tolist()))
+        self.pub_wrench_requested.publish(
+            Float32MultiArray(data=desired_wrench.tolist())
+        )
+        self.pub_thruster_force_requested.publish(
+            Float32MultiArray(data=desired_force.tolist())
+        )
+        self.pub_thruster_force_limited.publish(
+            Float32MultiArray(data=limited_force.tolist())
+        )
+        self.pub_wrench_after_thruster_limit.publish(
+            Float32MultiArray(data=wrench_after_thruster_limit.tolist())
+        )
+        self.pub_pwm_requested.publish(
+            Float32MultiArray(data=requested_pwm.tolist())
+        )
         self.pub_preview.publish(Float32MultiArray(data=pwm.tolist()))
         if self._control_active and self._discard_next_active_observation:
             self._discard_next_active_observation = False

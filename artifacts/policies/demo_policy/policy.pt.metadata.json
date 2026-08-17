@@ -1,0 +1,23 @@
+{
+  "action_contract": "legacy_model_299_no_t6",
+  "action_order": [
+    "surge",
+    "sway",
+    "heave",
+    "roll",
+    "pitch",
+    "yaw"
+  ],
+  "allocation_frame": "body_frd_sname_numeric_legacy",
+  "artifact_id": "brov_demo_policy_model_299",
+  "checkpoint_contract_verified": true,
+  "input_dim": 16,
+  "observation_contract": "brov_velocity_observation_v1",
+  "output_dim": 6,
+  "policy_frame": "legacy_numeric_no_t6",
+  "policy_sha256": "0d89f3270f46214f1569b7d48dcb5e25363b1d9b7353b82ced0fc67c0093a472",
+  "profile": "legacy_exact",
+  "schema": "brov_torchscript_policy_v2",
+  "vehicle_model_sha256": "8bb397f4a8a0d50c11bfaf1f88143b4375b84dbd77f41fbe7c512ced1b15be12",
+  "wrench_scale": [85.0, 85.0, 120.0, 26.0, 14.0, 22.0]
+}

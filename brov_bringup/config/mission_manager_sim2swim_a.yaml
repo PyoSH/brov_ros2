@@ -25,10 +25,10 @@ brov_mission_manager:
     localization_max_age_s: 1.0
     odometry_max_age_s: 0.5
 
-    cruise_speed: 0.50 # 0.10
+    cruise_speed: 0.50
     lookahead_dist: 0.40
     reach_threshold: 0.15
-    max_cruise_speed: 0.60 #0.30
+    max_cruise_speed: 0.60
     max_lookahead_dist: 1.00
     max_reach_threshold: 0.50
     heading_mode: takeoff_then_align

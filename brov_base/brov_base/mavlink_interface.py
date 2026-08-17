@@ -65,6 +65,32 @@ _CAMERA_RC_OPTION_CHANNELS = (7, 8)
 _THRUSTER_REVERSAL_SIGN = torch.tensor(
     [1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0, -1.0], dtype=torch.float32
 )
+_THRUSTER_REVERSAL_PROFILES = {
+    "real_brov2": _THRUSTER_REVERSAL_SIGN,
+    "edo_sitl_identity": torch.ones(8, dtype=torch.float32),
+}
+
+
+def thruster_reversal_sign_for_profile(
+    profile: str, connection_string: str
+) -> torch.Tensor:
+    """Resolve the fail-closed real/SITL wiring profile.
+
+    The real vehicle keeps the historical T2/T3/T8 correction.  Edo SITL
+    maps RC1..8 directly to thruster1..8, so its profile is identity and is
+    only accepted for a listening ``udpin:`` endpoint.
+    """
+
+    try:
+        sign = _THRUSTER_REVERSAL_PROFILES[profile]
+    except KeyError as error:
+        choices = ", ".join(sorted(_THRUSTER_REVERSAL_PROFILES))
+        raise ValueError(
+            f"unknown thruster_reversal_profile={profile!r}; expected {choices}"
+        ) from error
+    if profile == "edo_sitl_identity" and not connection_string.startswith("udpin:"):
+        raise ValueError("edo_sitl_identity requires a udpin: SITL connection")
+    return sign.clone()
 
 # EKF velocity_variance 임계값 — ArduPilot 자체 ekf_check 관례(0.8=불량, 10Hz*10회
 # 연속 불량=1초 지속 시 실패) 참고. 여기서는 매 호출 즉시 판정하는 단순 임계값만 적용

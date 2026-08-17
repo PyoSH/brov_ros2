@@ -117,7 +117,7 @@ class ObservationBuilder:
         q_d_zup = self._ned_body_to_zup(q_d_ned)
         v_d_b_zup = v_d_b_ned * self._t3
 
-        # ── brov_velocity_observation_v1 수식 ──
+        # ── brov_velocity_observation_v2 수식 ──
         # q와 -q는 같은 자세지만 NN observation에서는 전혀 다른 숫자다. MAVLink
         # quaternion의 최초 hemisphere나 yaw ±pi 통과 여부에 따라 q_e가 갑자기
         # -identity 근처가 되지 않도록 scalar-positive 표현으로 고정한다.

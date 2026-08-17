@@ -1,5 +1,6 @@
 """Vehicle configuration and thruster API regression tests."""
 
+import pytest
 import torch
 
 from brov_base.vendor.params import load_brov2_yaml, thruster_pos_dir_ned
@@ -42,3 +43,16 @@ def test_thruster_model_accepts_packaged_geometry():
     forces, torques = model.compute(torch.zeros((1, 8)))
     assert torch.equal(forces, torch.zeros((1, 3)))
     assert torch.equal(torques, torch.zeros((1, 3)))
+
+
+def test_thruster_force_clamp_matches_inverse_envelope():
+    model = BROV2ThrusterModel(num_envs=1, dt=0.04, device="cpu")
+    requested = torch.tensor(
+        [[-100.0, -51.5, -1.0, 0.0, 1.0, 64.1, 100.0, 0.0]]
+    )
+
+    limited = model.clamp_thrust(requested)
+
+    assert limited.tolist()[0] == pytest.approx(
+        [-51.5, -51.5, -1.0, 0.0, 1.0, 64.1, 64.1, 0.0]
+    )

@@ -505,6 +505,8 @@ def test_actuation_gate_requires_fresh_heartbeat_and_manual_mode() -> None:
 
 def test_authority_gate_requires_exactly_one_pwm_publisher() -> None:
     owner = SimpleNamespace(
+        _gazebo_truth_logging_enabled=False,
+        _gazebo_truth_topic="/brov/sim/gazebo_odometry_raw",
         _require_pool_localization=False,
         _require_resolved_mission=False,
         _send_pwm=True,
@@ -518,6 +520,46 @@ def test_authority_gate_requires_exactly_one_pwm_publisher() -> None:
             "expected exactly one thruster PWM publisher; "
             f"found {count}"
         )
+
+
+def test_authority_gate_requires_one_truth_publisher_when_recording() -> None:
+    counts = {
+        "/brov/sim/gazebo_odometry_raw": 1,
+        "/brov/thruster_pwm": 1,
+    }
+    owner = SimpleNamespace(
+        _gazebo_truth_logging_enabled=True,
+        _gazebo_truth_topic="/brov/sim/gazebo_odometry_raw",
+        _require_pool_localization=False,
+        _require_resolved_mission=False,
+        _send_pwm=True,
+        count_publishers=lambda topic: counts[topic],
+    )
+
+    assert ObsNode._authority_gate(owner) is None
+    for count in (0, 2):
+        counts["/brov/sim/gazebo_odometry_raw"] = count
+        assert ObsNode._authority_gate(owner) == (
+            "expected exactly one Gazebo truth publisher on "
+            "/brov/sim/gazebo_odometry_raw; "
+            f"found {count}"
+        )
+
+
+def test_arm_gate_rejects_invalid_selected_feedback_before_arming() -> None:
+    owner = SimpleNamespace(
+        _telemetry_valid=lambda _snapshot: (True, "ok"),
+        _selected_feedback_snapshot=lambda _snapshot: None,
+        _feedback_valid=lambda _snapshot: (False, "Gazebo truth unavailable"),
+        _authority_gate=lambda: None,
+        _actuation_mode_gate=lambda: None,
+        _require_pool_localization=False,
+        _require_resolved_mission=False,
+    )
+
+    assert ObsNode._arm_lifecycle_gate(owner, {"mav": "healthy"}) == (
+        "Gazebo truth unavailable"
+    )
 
 
 def test_pwm_watchdogs_precede_duplicate_sample_return_and_timestamp_send() -> None:
@@ -700,6 +742,8 @@ def _pwm_owner(now: float):
         _hardware_arm_approved=True,
         interface=interface,
         _telemetry_valid=lambda _snapshot: (True, "ok"),
+        _selected_feedback_snapshot=lambda snapshot: snapshot,
+        _feedback_valid=lambda _snapshot: (True, "ok"),
         _authority_gate=lambda: None,
         _actuation_mode_gate=lambda: None,
         _trip_fault=faults.append,

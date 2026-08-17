@@ -51,7 +51,8 @@ Vision pose를 policy 입력에 추가하지 않는다. 학습된 16-D observati
 - `P0→P1`: 일회성 level takeoff, `P1↔P2`: LOS align loop
 - 기본 takeoff 목표는 pool-frame `base_link z=0.70 m`
 - `heading_mode=takeoff_then_align`, `loop=true`
-- speed 0.10 m/s, lookahead 0.40 m, reach 0.15 m
+- 수평 cruise 0.50 m/s, lookahead 0.40 m, reach 0.15 m
+- `P0→P1` 수직 구간은 별도 `depth_speed_limit=0.05 m/s`를 유지한다.
 - 목표 높이에 도달한 뒤 두 수평점 사이를 왕복하며, 자동 종료가 없으므로 작업자가 정지한다.
 
 자동 경로의 보수적 기본 수평 길이는 0.20 m이다. `reach_threshold=0.15 m`보다

@@ -26,6 +26,10 @@ class _Policy:
 
 class _Thruster:
     @staticmethod
+    def clamp_thrust(force):
+        return force
+
+    @staticmethod
     def inverse_thrust(_force):
         return torch.tensor(
             [[0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.4, -0.4]]
@@ -39,13 +43,21 @@ def _owner():
         _obs_count=0,
         _vis_every_n=100,
         _action_abs_limit=torch.ones(6),
+        _policy_to_allocation=torch.ones(6),
         _pwm_abs_limit=1.0,
         _pwm_max_delta=None,
         _last_sent_pwm=torch.zeros(8),
         policy=_Policy(),
+        allocation_matrix=torch.zeros((6, 8)),
         allocation_pinv=torch.zeros((8, 6)),
         thruster=_Thruster(),
+        pub_action_raw=_Publisher(),
         pub_action=_Publisher(),
+        pub_wrench_requested=_Publisher(),
+        pub_thruster_force_requested=_Publisher(),
+        pub_thruster_force_limited=_Publisher(),
+        pub_wrench_after_thruster_limit=_Publisher(),
+        pub_pwm_requested=_Publisher(),
         pub_preview=_Publisher(),
         pub_pwm=_Publisher(),
         get_logger=lambda: SimpleNamespace(
@@ -68,6 +80,14 @@ def test_policy_always_previews_but_never_outputs_before_base_start() -> None:
     PolicyNode._on_observation(owner, _observation())
 
     assert len(owner.pub_action.messages) == 1
+    assert owner.pub_action_raw.messages[-1].data == pytest.approx(
+        [0.2, -0.1, 0.0, 0.1, -0.2, 0.3]
+    )
+    assert len(owner.pub_wrench_requested.messages) == 1
+    assert len(owner.pub_thruster_force_requested.messages) == 1
+    assert len(owner.pub_thruster_force_limited.messages) == 1
+    assert len(owner.pub_wrench_after_thruster_limit.messages) == 1
+    assert len(owner.pub_pwm_requested.messages) == 1
     assert len(owner.pub_preview.messages) == 1
     assert owner.pub_preview.messages[-1].data == pytest.approx(
         [0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.4, -0.4]
@@ -130,6 +150,22 @@ def test_action_and_pwm_limits_apply_to_preview_and_live_output() -> None:
     )
     assert owner.pub_preview.messages[-1].data == pytest.approx(
         [0.1, -0.1, 0.2, -0.2, 0.25, -0.25, 0.25, -0.25]
+    )
+
+
+def test_mk2_t6_is_applied_after_action_limit_and_before_allocation() -> None:
+    owner = _owner()
+    owner._policy_to_allocation = torch.tensor(
+        [1.0, -1.0, -1.0, 1.0, -1.0, -1.0]
+    )
+
+    PolicyNode._on_observation(owner, _observation())
+
+    assert owner.pub_action.messages[-1].data == pytest.approx(
+        [0.2, -0.1, 0.0, 0.1, -0.2, 0.3]
+    )
+    assert owner.pub_wrench_requested.messages[-1].data == pytest.approx(
+        [17.0, 8.5, 0.0, 2.6, 2.8, -6.6]
     )
 
 

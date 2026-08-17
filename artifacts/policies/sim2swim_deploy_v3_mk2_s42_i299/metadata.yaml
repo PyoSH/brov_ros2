@@ -1,0 +1,41 @@
+schema: brov_policy_artifact_v2
+artifact_id: sim2swim_deploy_v3_mk2_s42_i299
+artifact_version: 2
+compatibility:
+  required_executable: policy_node_mk2
+  legacy_node_compatible: false
+model:
+  file: policy_raw_flu_mk2.pt
+  format: torchscript
+  sha256: 65d5542c4387c0ec3baea5814f6cf2ee6f1f049eb6a0d869636bed1d24f9012c
+  checkpoint_sha256: 059e25f83def9102b879e0dc45e669118cf62cbd617488577f7c3de2e911646d
+  checkpoint_iteration: 299
+training:
+  profile: deploy_v3
+  seed: 42
+  manifest_sha256: 65edd2f9185d6488e470422e3c5cb80e82eb431526884585ace093ed1bbd91fc
+input:
+  shape: [1, 16]
+  observation_schema: brov_velocity_observation_v2
+  fields:
+    - q_error_wxyz
+    - velocity_error_body_zup
+    - angular_velocity_body_zup
+    - velocity_error_integral
+    - quaternion_vector_error_integral
+  quaternion: wxyz_scalar_nonnegative
+  integral_limits: [-5.0, 5.0]
+output:
+  shape: [1, 6]
+  action_order: [surge, sway, heave, roll, pitch, yaw]
+  actor_frame: body_flu_zup
+  actor_raw_range: unbounded
+  runtime_clip: [-1.0, 1.0]
+adapter:
+  contract: explicit_flu_zup_to_sname_frd_v1
+  diagonal: [1.0, -1.0, -1.0, 1.0, -1.0, -1.0]
+  source_frame: body_flu_zup
+  target_frame: body_frd_sname
+  applied_by: policy_node_mk2
+wrench_scale: [85.0, 85.0, 120.0, 26.0, 14.0, 22.0]
+vehicle_model_sha256: 8bb397f4a8a0d50c11bfaf1f88143b4375b84dbd77f41fbe7c512ced1b15be12

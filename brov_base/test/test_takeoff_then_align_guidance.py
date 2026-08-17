@@ -72,12 +72,12 @@ def test_takeoff_holds_initial_level_heading_then_enters_loop() -> None:
     assert int(guidance._wp_idx[0]) == 1
 
 
-@pytest.mark.parametrize("loop,count", [(False, 3), (True, 2), (True, 4)])
+@pytest.mark.parametrize("loop,count", [(False, 2), (False, 4), (True, 2), (True, 4)])
 def test_takeoff_mode_requires_one_prefix_plus_two_loop_points(
     loop: bool, count: int
 ) -> None:
     with pytest.raises(
-        ValueError, match="requires loop=true and exactly three waypoints"
+        ValueError, match="requires exactly three waypoints"
     ):
         LOSGuidance(
             torch.zeros((1, count, 3)),
@@ -85,3 +85,40 @@ def test_takeoff_mode_requires_one_prefix_plus_two_loop_points(
             heading_mode="takeoff_then_align",
             loop=loop,
         )
+
+
+def test_takeoff_can_finish_one_horizontal_leg_without_reversal() -> None:
+    waypoints = torch.tensor(
+        [[[0.0, 0.0, 0.0], [0.0, 0.0, 0.2], [5.0, 0.0, 0.2]]],
+        dtype=torch.float32,
+    )
+    guidance = LOSGuidance(
+        waypoints,
+        "cpu",
+        cruise_speed=0.5,
+        lookahead_dist=1.0,
+        reach_threshold=0.5,
+        heading_mode="takeoff_then_align",
+        loop=False,
+        depth_speed_limit=0.05,
+    )
+    identity = mu.identity_quat(1, "cpu")
+    guidance.reset(torch.tensor([0]), initial_quat=identity)
+
+    takeoff_v, _ = guidance.compute(
+        torch.tensor([[0.0, 0.0, 0.0]]), identity, advance_waypoint=False
+    )
+    assert takeoff_v[0].tolist() == pytest.approx([0.0, 0.0, 0.05])
+
+    outbound_v, _ = guidance.compute(
+        torch.tensor([[0.0, 0.0, 0.2]]), identity, advance_waypoint=True
+    )
+    assert int(guidance._wp_idx[0]) == 1
+    assert outbound_v[0].tolist() == pytest.approx([0.5, 0.0, 0.0])
+
+    hold_v, _ = guidance.compute(
+        torch.tensor([[5.0, 0.0, 0.2]]), identity, advance_waypoint=True
+    )
+    assert bool(guidance.mission_complete[0])
+    assert int(guidance._wp_idx[0]) == 1
+    assert hold_v[0].tolist() == pytest.approx([0.0, 0.0, 0.0])

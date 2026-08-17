@@ -106,7 +106,8 @@ def main() -> int:
         print(f"[FAIL] vehicle model: {exc}")
 
     policy_path = Path(
-        os.environ.get(
+        os.environ.get("BROV_MK2_POLICY_PATH")
+        or os.environ.get(
             "BROV_POLICY_PATH",
             str(
                 REPOSITORY_ROOT
@@ -129,7 +130,16 @@ def main() -> int:
             import yaml
 
             metadata = yaml.safe_load(metadata_path.read_text(encoding="utf-8"))
-            expected = str(metadata["sha256"])
+            metadata_schema = str(metadata.get("schema", "legacy_v1"))
+            if metadata_schema == "brov_policy_artifact_v2":
+                model_metadata = metadata["model"]
+                if str(model_metadata["file"]) != policy_path.name:
+                    raise RuntimeError(
+                        "metadata model filename does not match policy path"
+                    )
+                expected = str(model_metadata["sha256"])
+            else:
+                expected = str(metadata["sha256"])
             actual = _sha256(policy_path)
             if actual != expected:
                 raise RuntimeError(f"checksum mismatch: {actual} != {expected}")
@@ -149,6 +159,34 @@ def main() -> int:
                     "vehicle model checksum mismatch: "
                     f"{actual_vehicle} != {expected_vehicle}"
                 )
+
+            if metadata_schema == "brov_policy_artifact_v2":
+                from brov_control.policy_contract import (
+                    resolve_policy_artifact_contract,
+                )
+
+                compatibility = metadata["compatibility"]
+                if compatibility.get("required_executable") != "policy_node_mk2":
+                    raise RuntimeError("MK2 bundle must require policy_node_mk2")
+                if compatibility.get("legacy_node_compatible") is not False:
+                    raise RuntimeError("MK2 bundle must reject the legacy node")
+                adapter = metadata["adapter"]
+                contract = resolve_policy_artifact_contract(
+                    policy_path,
+                    requested_action_contract=str(adapter["contract"]),
+                    vehicle_model_path=vehicle_model_path,
+                )
+                if contract.policy_sha256 != expected:
+                    raise RuntimeError("runtime/YAML policy checksum mismatch")
+                if (
+                    contract.observation_contract
+                    != metadata["input"]["observation_schema"]
+                ):
+                    raise RuntimeError(
+                        "runtime/YAML observation contract mismatch"
+                    )
+                if contract.profile != metadata["training"]["profile"]:
+                    raise RuntimeError("runtime/YAML policy profile mismatch")
 
             input_shape = tuple(int(value) for value in metadata["input"]["shape"])
             output_shape = tuple(int(value) for value in metadata["output"]["shape"])

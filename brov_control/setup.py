@@ -28,6 +28,7 @@ setup(
     entry_points={
         "console_scripts": [
             "policy_node = brov_control.policy_node:main",
+            "policy_node_mk2 = brov_control.policy_node_mk2:main",
             (
                 "model_based_controller_node = "
                 "brov_control.model_based_controller_node:main"

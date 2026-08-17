@@ -30,6 +30,12 @@ def generate_launch_description() -> LaunchDescription:
     mission_file = LaunchConfiguration("mission_file")
     safety_config = LaunchConfiguration("safety_config")
     connection = LaunchConfiguration("connection")
+    feedback_source = LaunchConfiguration("feedback_source")
+    gazebo_truth_logging_enabled = LaunchConfiguration(
+        "gazebo_truth_logging_enabled"
+    )
+    gazebo_truth_topic = LaunchConfiguration("gazebo_truth_topic")
+    gazebo_truth_max_age_s = LaunchConfiguration("gazebo_truth_max_age_s")
     send_pwm = LaunchConfiguration("send_pwm")
     arm = LaunchConfiguration("arm")
     require_pool_localization = LaunchConfiguration(
@@ -57,6 +63,23 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "connection", default_value="udpout:192.168.2.2:14550"
+            ),
+            DeclareLaunchArgument(
+                "feedback_source",
+                default_value="mavlink_ekf",
+                choices=["mavlink_ekf", "gazebo_truth"],
+            ),
+            DeclareLaunchArgument(
+                "gazebo_truth_logging_enabled",
+                default_value="false",
+                choices=["true", "false"],
+            ),
+            DeclareLaunchArgument(
+                "gazebo_truth_topic",
+                default_value="/brov/sim/gazebo_odometry_raw",
+            ),
+            DeclareLaunchArgument(
+                "gazebo_truth_max_age_s", default_value="0.12"
             ),
             DeclareLaunchArgument(
                 "send_pwm", default_value="false", choices=["true", "false"]
@@ -101,6 +124,18 @@ def generate_launch_description() -> LaunchDescription:
                     safety_config,
                     {
                         "connection": ParameterValue(connection, value_type=str),
+                        "feedback_source": ParameterValue(
+                            feedback_source, value_type=str
+                        ),
+                        "gazebo_truth_logging_enabled": ParameterValue(
+                            gazebo_truth_logging_enabled, value_type=bool
+                        ),
+                        "gazebo_truth_topic": ParameterValue(
+                            gazebo_truth_topic, value_type=str
+                        ),
+                        "gazebo_truth_max_age_s": ParameterValue(
+                            gazebo_truth_max_age_s, value_type=float
+                        ),
                         "send_pwm": ParameterValue(send_pwm, value_type=bool),
                         "arm": ParameterValue(arm, value_type=bool),
                         "require_pool_localization": ParameterValue(

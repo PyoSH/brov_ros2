@@ -79,7 +79,8 @@ def test_case_a_uses_position_v1_takeoff_then_align_profile() -> None:
     assert profile["loop"] is True
     assert profile["min_waypoints"] == 3
     assert profile["max_waypoints"] == 3
-    assert profile["cruise_speed"] == pytest.approx(0.10)
+    assert profile["cruise_speed"] == pytest.approx(0.50)
+    assert profile["max_cruise_speed"] == pytest.approx(0.60)
     assert profile["lookahead_dist"] == pytest.approx(0.40)
     assert profile["reach_threshold"] == pytest.approx(0.15)
     assert not any(key.startswith("random_attitude_") for key in profile)
@@ -156,7 +157,11 @@ def test_case_c_has_benign_bootstrap_and_gateway_envelope() -> None:
         "brov_obs_node"
     ]["ros__parameters"]
     case_c = _yaml_parameters("safety_sim2swim_c.yaml", "brov_obs_node")
-    overridden = {"max_pwm_abs", "max_pwm_delta_per_s"}
+    overridden = {
+        "max_resolved_cruise_speed",
+        "max_pwm_abs",
+        "max_pwm_delta_per_s",
+    }
     assert set(general) <= set(case_c)
     assert all(
         case_c[key] == value
@@ -165,6 +170,8 @@ def test_case_c_has_benign_bootstrap_and_gateway_envelope() -> None:
     )
     assert case_c["max_pwm_abs"] == pytest.approx(0.35)
     assert case_c["max_pwm_delta_per_s"] == pytest.approx(0.50)
+    assert general["max_resolved_cruise_speed"] == pytest.approx(0.60)
+    assert case_c["max_resolved_cruise_speed"] == pytest.approx(0.30)
     controller_slew = _yaml_parameters(
         "rl_controller_sim2swim_c.yaml", "brov_policy_node"
     )["pwm_slew_rate_per_s"]

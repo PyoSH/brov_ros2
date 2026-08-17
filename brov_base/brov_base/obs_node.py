@@ -88,15 +88,22 @@ from brov_interfaces.msg import (
 )
 from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
+from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
 from rclpy.node import Node
-from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from std_msgs.msg import (
     Bool,
     Empty,
     Float32,
     Float32MultiArray,
+    Float64MultiArray,
     Int32,
     Int32MultiArray,
     String,
@@ -104,7 +111,10 @@ from std_msgs.msg import (
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
-from brov_base.mavlink_interface import RealRobotInterface
+from brov_base.mavlink_interface import (
+    RealRobotInterface,
+    thruster_reversal_sign_for_profile,
+)
 from brov_base.mission import (
     odom_waypoints_to_mission,
     parse_waypoints,
@@ -114,6 +124,7 @@ from brov_base.mission import (
 from brov_base.odometry import ned_frd_to_odom_flu
 from brov_base.observation import ObservationBuilder
 from brov_base.guidance import LOSGuidance, RandomAttitudeConfig
+from brov_base.gazebo_truth import GazeboTruthBuffer
 from brov_base import math_utils as mu
 
 
@@ -219,6 +230,33 @@ class ObsNode(Node):
     def __init__(self):
         super().__init__("brov_obs_node")
         self.declare_parameter("connection", "udpin:0.0.0.0:14550")
+        self.declare_parameter("thruster_reversal_profile", "real_brov2")
+        def source_descriptor() -> ParameterDescriptor:
+            return ParameterDescriptor(
+                read_only=True,
+                description="Initialization-only Stage-1 feedback provenance",
+            )
+
+        self.declare_parameter(
+            "feedback_source", "mavlink_ekf", source_descriptor()
+        )
+        self.declare_parameter(
+            "gazebo_truth_logging_enabled", False, source_descriptor()
+        )
+        self.declare_parameter(
+            "gazebo_truth_topic",
+            "/brov/sim/gazebo_odometry_raw",
+            source_descriptor(),
+        )
+        self.declare_parameter(
+            "gazebo_truth_max_age_s", 0.12, source_descriptor()
+        )
+        self.declare_parameter(
+            "gazebo_truth_frame", "odom", source_descriptor()
+        )
+        self.declare_parameter(
+            "gazebo_truth_child_frame", "base_link", source_descriptor()
+        )
         self.declare_parameter("waypoints", "0,0,0;3,0,0")
         self.declare_parameter("cruise_speed", 0.2)
         self.declare_parameter("heading_mode", "straight")
@@ -293,6 +331,44 @@ class ObsNode(Node):
         self.declare_parameter("odom_angular_velocity_variance", 0.25)
 
         conn = self.get_parameter("connection").value
+        self._feedback_source = str(
+            self.get_parameter("feedback_source").value
+        ).strip()
+        if self._feedback_source not in {"mavlink_ekf", "gazebo_truth"}:
+            raise ValueError(
+                "feedback_source must be 'mavlink_ekf' or 'gazebo_truth'"
+            )
+        self._gazebo_truth_logging_enabled = bool(
+            self.get_parameter("gazebo_truth_logging_enabled").value
+        ) or self._feedback_source == "gazebo_truth"
+        self._gazebo_truth_topic = str(
+            self.get_parameter("gazebo_truth_topic").value
+        ).strip()
+        self._gazebo_truth_max_age_s = float(
+            self.get_parameter("gazebo_truth_max_age_s").value
+        )
+        self._gazebo_truth_frame = str(
+            self.get_parameter("gazebo_truth_frame").value
+        ).strip()
+        self._gazebo_truth_child_frame = str(
+            self.get_parameter("gazebo_truth_child_frame").value
+        ).strip()
+        if self._gazebo_truth_logging_enabled:
+            if not str(conn).startswith("udpin:"):
+                raise ValueError(
+                    "Gazebo truth is simulation-only and requires an udpin connection"
+                )
+            if not self._gazebo_truth_topic:
+                raise ValueError("gazebo_truth_topic must be non-empty")
+            if not self._gazebo_truth_frame or not self._gazebo_truth_child_frame:
+                raise ValueError("Gazebo truth frame names must be non-empty")
+            if (
+                not math.isfinite(self._gazebo_truth_max_age_s)
+                or self._gazebo_truth_max_age_s <= 0.0
+            ):
+                raise ValueError(
+                    "gazebo_truth_max_age_s must be finite and positive"
+                )
         waypoints = parse_waypoints(self.get_parameter("waypoints").value)
         waypoint_frame = str(self.get_parameter("waypoint_frame").value)
         heading_mode = str(self.get_parameter("heading_mode").value)
@@ -348,6 +424,13 @@ class ObsNode(Node):
         if self._require_resolved_mission and not self._require_pool_localization:
             raise ValueError(
                 "require_resolved_mission requires require_pool_localization"
+            )
+        if self._feedback_source == "gazebo_truth" and (
+            self._require_pool_localization or self._require_resolved_mission
+        ):
+            raise ValueError(
+                "gazebo_truth feedback is limited to direct relative missions; "
+                "pool localization/resolved missions remain MAVLink-owned"
             )
         self._max_mission_start_distance_m = float(
             self.get_parameter("max_mission_start_distance_m").value
@@ -496,8 +579,28 @@ class ObsNode(Node):
             raise ValueError("required_custom_mode must be non-negative")
         self._odom_covariance = self._read_odom_covariance()
 
-        self.interface = RealRobotInterface(conn)
+        reversal_profile = str(
+            self.get_parameter("thruster_reversal_profile").value
+        )
+        if (
+            self._feedback_source == "gazebo_truth"
+            and reversal_profile != "edo_sitl_identity"
+        ):
+            raise ValueError(
+                "gazebo_truth feedback requires thruster_reversal_profile="
+                "'edo_sitl_identity'"
+            )
+        reversal_sign = thruster_reversal_sign_for_profile(
+            reversal_profile, str(conn)
+        )
+        self.interface = RealRobotInterface(
+            conn, thruster_reversal_sign=reversal_sign
+        )
         self.interface.connect()
+        self.get_logger().info(
+            "thruster reversal profile: "
+            f"{reversal_profile} sign={reversal_sign.tolist()}"
+        )
 
         self._send_pwm = bool(self.get_parameter("send_pwm").value)
         self._arm_permitted = bool(self.get_parameter("arm").value)
@@ -536,6 +639,27 @@ class ObsNode(Node):
             self._on_resolved_mission,
             latched_qos,
         )
+        self._gazebo_truth_buffer = (
+            GazeboTruthBuffer(
+                expected_frame=self._gazebo_truth_frame,
+                expected_child_frame=self._gazebo_truth_child_frame,
+                quaternion_norm_tolerance=float(
+                    self.get_parameter("quat_norm_tolerance").value
+                ),
+            )
+            if self._gazebo_truth_logging_enabled
+            else None
+        )
+        self.sub_gazebo_truth = (
+            self.create_subscription(
+                Odometry,
+                self._gazebo_truth_topic,
+                self._on_gazebo_truth,
+                qos_profile_sensor_data,
+            )
+            if self._gazebo_truth_buffer is not None
+            else None
+        )
 
         self.obs_builder = ObservationBuilder(
             integral_vel_limit=float(self.get_parameter("integral_vel_limit").value),
@@ -565,6 +689,36 @@ class ObsNode(Node):
             Float32MultiArray, "/brov/debug/vel_ned", 10
         )
         self.pub_quat = self.create_publisher(Float32MultiArray, "/brov/debug/att_quat_ned", 10)
+        self.pub_feedback_pos = self.create_publisher(
+            Float32MultiArray, "/brov/debug/feedback_pos_ned", 10
+        )
+        self.pub_feedback_vel = self.create_publisher(
+            Float32MultiArray, "/brov/debug/feedback_vel_ned", 10
+        )
+        self.pub_feedback_quat = self.create_publisher(
+            Float32MultiArray, "/brov/debug/feedback_att_quat_ned", 10
+        )
+        self.pub_feedback_rates = self.create_publisher(
+            Float32MultiArray, "/brov/debug/feedback_body_rates_frd", 10
+        )
+        self.pub_gazebo_truth_pos = self.create_publisher(
+            Float32MultiArray, "/brov/debug/gazebo_truth_pos_ned", 10
+        )
+        self.pub_gazebo_truth_vel = self.create_publisher(
+            Float32MultiArray, "/brov/debug/gazebo_truth_vel_ned", 10
+        )
+        self.pub_gazebo_truth_quat = self.create_publisher(
+            Float32MultiArray, "/brov/debug/gazebo_truth_att_quat_ned", 10
+        )
+        self.pub_feedback_timing = self.create_publisher(
+            Float64MultiArray, "/brov/debug/feedback_timing", 10
+        )
+        self.pub_feedback_source = self.create_publisher(
+            String, "/brov/debug/feedback_source", latched_qos
+        )
+        self.pub_feedback_timing_schema = self.create_publisher(
+            String, "/brov/debug/feedback_timing_schema", latched_qos
+        )
         self.pub_pos_mission = self.create_publisher(
             Float32MultiArray, "/brov/debug/pos_mission", 10
         )
@@ -634,6 +788,7 @@ class ObsNode(Node):
         self._active_obs_published = False
         self._faulted = False
         self._last_sample_key = None
+        self._last_mavlink_odometry_key = None
         self._last_sample_time = None
         self._last_wp_idx = -1
         self._logged_complete = False
@@ -667,6 +822,18 @@ class ObsNode(Node):
         self._last_odom_sample_time: float | None = None
         self.timer = self.create_timer(0.04, self._tick)   # 현재 배포 pipeline: 25 Hz
         self.camera_tilt_timer = self.create_timer(0.05, self._camera_tilt_tick)  # 20Hz
+        self.pub_feedback_source.publish(String(data=self._feedback_source))
+        self.pub_feedback_timing_schema.publish(
+            String(
+                data=(
+                    "[source_code(0=mavlink_ekf,1=gazebo_truth),"
+                    "selected_source_time_s,selected_receive_monotonic_s,"
+                    "selected_age_s,mav_att_boot_s,mav_pos_boot_s,"
+                    "mav_att_age_s,mav_pos_age_s,gazebo_source_time_s,"
+                    "gazebo_age_s]"
+                )
+            )
+        )
         # Persistent SERVO/RC parameter mutation is deliberately the final
         # constructor step.  Any failure closes the MAVLink worker and restores
         # a partially-applied passthrough transaction before construction exits.
@@ -699,6 +866,11 @@ class ObsNode(Node):
             f"heading_mode={heading_mode} — "
             "적분/PWM은 /brov/start_control 호출 전까지 동결"
         )
+        self.get_logger().info(
+            f"policy feedback source: {self._feedback_source}; "
+            f"Gazebo truth logging={self._gazebo_truth_logging_enabled} "
+            f"topic={self._gazebo_truth_topic}"
+        )
         if waypoint_bounds_enabled:
             self.get_logger().info(
                 "waypoint input bounds enabled — "
@@ -709,6 +881,139 @@ class ObsNode(Node):
             "camera tilt: /brov/camera_tilt/command [-1,1] → "
             f"[{self._camera_tilt_min_deg:.1f}, {self._camera_tilt_max_deg:.1f}]deg, "
             f"rate≤{self._camera_tilt_max_rate_deg_s:.1f}deg/s"
+        )
+
+    def _on_gazebo_truth(self, message: Odometry) -> None:
+        buffer = self._gazebo_truth_buffer
+        if buffer is None or buffer.invalid_reason is not None:
+            return
+        try:
+            buffer.update(message)
+        except ValueError as error:
+            self.get_logger().error(f"Gazebo truth rejected: {error}")
+            if self._control_active and self._feedback_source == "gazebo_truth":
+                self._trip_fault(f"Gazebo truth invalid: {error}")
+
+    def _gazebo_truth_snapshot(self) -> dict | None:
+        if self._gazebo_truth_buffer is None:
+            return None
+        return self._gazebo_truth_buffer.snapshot()
+
+    def _selected_feedback_snapshot(self, mavlink_snapshot: dict) -> dict | None:
+        if self._feedback_source == "mavlink_ekf":
+            return mavlink_snapshot
+        return self._gazebo_truth_snapshot()
+
+    @staticmethod
+    def _feedback_sample_time(snapshot: dict) -> float:
+        return max(float(snapshot["att_rx_time"]), float(snapshot["pos_rx_time"]))
+
+    def _feedback_valid(self, snapshot: dict | None) -> tuple[bool, str]:
+        if snapshot is None:
+            return False, f"{self._feedback_source} feedback unavailable"
+        if self._feedback_source == "mavlink_ekf":
+            return self._telemetry_valid(snapshot)
+
+        buffer = self._gazebo_truth_buffer
+        if buffer is None:
+            return False, "Gazebo truth buffer unavailable"
+        if buffer.invalid_reason is not None:
+            return False, f"Gazebo truth invalid: {buffer.invalid_reason}"
+        age = max(float(snapshot["att_age_s"]), float(snapshot["pos_age_s"]))
+        if not math.isfinite(age) or age >= self._gazebo_truth_max_age_s:
+            return False, (
+                f"Gazebo truth stale ({age:.3f}s >= "
+                f"{self._gazebo_truth_max_age_s:.3f}s)"
+            )
+        tensors = (
+            snapshot["att_quat_ned"],
+            snapshot["body_rates_ned"],
+            snapshot["pos_ned"],
+            snapshot["vel_ned"],
+        )
+        if not all(torch.isfinite(value).all() for value in tensors):
+            return False, "Gazebo truth NaN/Inf"
+        q_norm = float(snapshot["att_quat_ned"].norm())
+        q_tol = float(self.get_parameter("quat_norm_tolerance").value)
+        if abs(q_norm - 1.0) > q_tol:
+            return False, f"Gazebo truth quaternion norm invalid ({q_norm:.4f})"
+        return True, "ok"
+
+    def _publish_feedback_diagnostics(
+        self,
+        mavlink_snapshot: dict,
+        selected_snapshot: dict,
+        gazebo_snapshot: dict | None,
+    ) -> None:
+        self.pub_feedback_pos.publish(
+            Float32MultiArray(data=selected_snapshot["pos_ned"].tolist())
+        )
+        self.pub_feedback_vel.publish(
+            Float32MultiArray(data=selected_snapshot["vel_ned"].tolist())
+        )
+        self.pub_feedback_quat.publish(
+            Float32MultiArray(data=selected_snapshot["att_quat_ned"].tolist())
+        )
+        self.pub_feedback_rates.publish(
+            Float32MultiArray(data=selected_snapshot["body_rates_ned"].tolist())
+        )
+        if gazebo_snapshot is not None:
+            self.pub_gazebo_truth_pos.publish(
+                Float32MultiArray(data=gazebo_snapshot["pos_ned"].tolist())
+            )
+            self.pub_gazebo_truth_vel.publish(
+                Float32MultiArray(data=gazebo_snapshot["vel_ned"].tolist())
+            )
+            self.pub_gazebo_truth_quat.publish(
+                Float32MultiArray(
+                    data=gazebo_snapshot["att_quat_ned"].tolist()
+                )
+            )
+
+        mav_att_boot = mavlink_snapshot.get("att_time_boot_ms")
+        mav_pos_boot = mavlink_snapshot.get("pos_time_boot_ms")
+        gazebo_source_time = (
+            float("nan")
+            if gazebo_snapshot is None
+            else float(gazebo_snapshot["feedback_source_time_s"])
+        )
+        gazebo_age = (
+            float("inf")
+            if gazebo_snapshot is None
+            else max(
+                float(gazebo_snapshot["att_age_s"]),
+                float(gazebo_snapshot["pos_age_s"]),
+            )
+        )
+        selected_source_time = (
+            max(float(mav_att_boot), float(mav_pos_boot)) * 1.0e-3
+            if self._feedback_source == "mavlink_ekf"
+            else float(selected_snapshot["feedback_source_time_s"])
+        )
+        selected_receive_time = (
+            self._feedback_sample_time(selected_snapshot)
+            if self._feedback_source == "mavlink_ekf"
+            else float(selected_snapshot["feedback_rx_monotonic"])
+        )
+        selected_age = max(
+            float(selected_snapshot["att_age_s"]),
+            float(selected_snapshot["pos_age_s"]),
+        )
+        self.pub_feedback_timing.publish(
+            Float64MultiArray(
+                data=[
+                    0.0 if self._feedback_source == "mavlink_ekf" else 1.0,
+                    selected_source_time,
+                    selected_receive_time,
+                    selected_age,
+                    float(mav_att_boot) * 1.0e-3,
+                    float(mav_pos_boot) * 1.0e-3,
+                    float(mavlink_snapshot["att_age_s"]),
+                    float(mavlink_snapshot["pos_age_s"]),
+                    gazebo_source_time,
+                    gazebo_age,
+                ]
+            )
         )
 
     def _read_odom_covariance(self) -> dict[str, float]:
@@ -925,6 +1230,10 @@ class ObsNode(Node):
         valid, reason = self._telemetry_valid(snap)
         if not valid:
             return reason
+        feedback_snap = self._selected_feedback_snapshot(snap)
+        valid, reason = self._feedback_valid(feedback_snap)
+        if not valid:
+            return reason
         reason = self._authority_gate()
         if reason is not None:
             return reason
@@ -1028,6 +1337,13 @@ class ObsNode(Node):
         return True
 
     def _authority_gate(self) -> str | None:
+        if self._gazebo_truth_logging_enabled:
+            count = self.count_publishers(self._gazebo_truth_topic)
+            if count != 1:
+                return (
+                    "expected exactly one Gazebo truth publisher on "
+                    f"{self._gazebo_truth_topic}; found {count}"
+                )
         if self._require_pool_localization:
             count = self.count_publishers("/brov/localization/status")
             if count != 1:
@@ -1686,12 +2002,18 @@ class ObsNode(Node):
             response.success, response.message = True, "control already active"
             return response
         if not self._ready or snap is None:
-            response.success, response.message = False, "telemetry not ready"
+            response.success, response.message = False, "telemetry/feedback not ready"
             return response
         valid, reason = self._telemetry_valid(snap)
         if not valid:
             response.success, response.message = False, reason
             return response
+        feedback_snap = self._selected_feedback_snapshot(snap)
+        valid, reason = self._feedback_valid(feedback_snap)
+        if not valid:
+            response.success, response.message = False, reason
+            return response
+        assert feedback_snap is not None
         reason = self._authority_gate()
         if reason is not None:
             response.success, response.message = False, reason
@@ -1749,13 +2071,13 @@ class ObsNode(Node):
             self.obs_builder.reset_integrators()
         else:
             # Legacy relative missions keep their original start-time reset.
-            self._reset_guidance_at_snapshot(snap)
+            self._reset_guidance_at_snapshot(feedback_snap)
         initial_yaw_ned_deg = float(
-            torch.rad2deg(mu.yaw_from_quat(snap["att_quat_ned"]))
+            torch.rad2deg(mu.yaw_from_quat(feedback_snap["att_quat_ned"]))
         )
         self._last_wp_idx = -1
         self._logged_complete = False
-        self._last_sample_time = max(snap["att_rx_time"], snap["pos_rx_time"])
+        self._last_sample_time = self._feedback_sample_time(feedback_snap)
         self._control_active = True
         self._active_obs_published = False
         self._hardware_arm_deadline = None
@@ -1770,6 +2092,7 @@ class ObsNode(Node):
         self.get_logger().info(
             "CONTROL ACTIVE — z_v/z_q reset 후 적분/PWM 허용; "
             f"frame={self.obs_builder.waypoint_frame}, "
+            f"feedback={self._feedback_source}, "
             f"initial_yaw_ned={initial_yaw_ned_deg:.1f}deg"
         )
         response.success, response.message = True, "control active; integrators reset"
@@ -1802,9 +2125,14 @@ class ObsNode(Node):
         self._clear_active_contract()
         self._clear_prepared_contract()
         self.obs_builder.reset_integrators()
-        snap = self.interface.snapshot()
+        mavlink_snapshot = self.interface.snapshot()
+        snap = (
+            None
+            if mavlink_snapshot is None
+            else self._selected_feedback_snapshot(mavlink_snapshot)
+        )
         self._last_sample_time = (
-            None if snap is None else max(snap["att_rx_time"], snap["pos_rx_time"])
+            None if snap is None else self._feedback_sample_time(snap)
         )
         if self._send_pwm:
             self.interface.neutral_stop()
@@ -1814,10 +2142,10 @@ class ObsNode(Node):
         return response
 
     def _tick(self):
-        snap = self.interface.snapshot()
-        if self._inactive_arm_watchdog(snap):
+        mavlink_snapshot = self.interface.snapshot()
+        if self._inactive_arm_watchdog(mavlink_snapshot):
             return
-        if snap is None:
+        if mavlink_snapshot is None:
             # An active node has previously held a complete telemetry
             # snapshot.  Losing both streams (for example during an autopilot
             # reset) is therefore a control fault, not an ordinary startup
@@ -1842,7 +2170,7 @@ class ObsNode(Node):
         # internal state.
         output_enabled = self._control_active and self._active_obs_published
         self.pub_control_active.publish(Bool(data=output_enabled))
-        valid, reason = self._telemetry_valid(snap)
+        valid, reason = self._telemetry_valid(mavlink_snapshot)
         if not valid:
             reason_kind = reason.split(" (", 1)[0]
             if reason_kind != self._last_wait_reason:
@@ -1856,7 +2184,7 @@ class ObsNode(Node):
         # This gate is checked before the duplicate-snapshot early return so a
         # lost localization heartbeat cannot stay hidden while MAVLink is idle.
         if self._control_active and self._require_pool_localization:
-            reason = self._pool_localization_gate(snap)
+            reason = self._pool_localization_gate(mavlink_snapshot)
             if reason is not None:
                 self._trip_fault(reason)
                 return
@@ -1877,31 +2205,70 @@ class ObsNode(Node):
                 )
                 return
 
-        sample_key = (snap["att_seq"], snap["pos_seq"])
-        if sample_key == self._last_sample_key:
-            return   # 같은 MAVLink snapshot을 timer가 다시 읽어도 재적분/재발행하지 않음
-        self._last_sample_key = sample_key
-        self._publish_raw(snap)
-        try:
-            self._publish_odometry(snap)
-        except (RuntimeError, ValueError) as error:
+        mavlink_key = (
+            mavlink_snapshot["att_seq"],
+            mavlink_snapshot["pos_seq"],
+        )
+        if mavlink_key != self._last_mavlink_odometry_key:
+            self._last_mavlink_odometry_key = mavlink_key
+            self._publish_raw(mavlink_snapshot)
+            try:
+                self._publish_odometry(mavlink_snapshot)
+            except (RuntimeError, ValueError) as error:
+                if self._control_active:
+                    self._trip_fault(f"odometry publication failed: {error}")
+                else:
+                    self.get_logger().error(
+                        f"odometry publication failed: {error}"
+                    )
+                return
+
+        gazebo_snapshot = self._gazebo_truth_snapshot()
+        feedback_snap = (
+            mavlink_snapshot
+            if self._feedback_source == "mavlink_ekf"
+            else gazebo_snapshot
+        )
+        valid, reason = self._feedback_valid(feedback_snap)
+        if not valid:
+            reason_kind = reason.split(" (", 1)[0]
+            if reason_kind != self._last_wait_reason:
+                self.get_logger().warn(f"feedback gated: {reason}")
+                self._last_wait_reason = reason_kind
             if self._control_active:
-                self._trip_fault(f"odometry publication failed: {error}")
-            else:
-                self.get_logger().error(f"odometry publication failed: {error}")
+                self._trip_fault(reason)
             return
+        self._last_wait_reason = None
+        assert feedback_snap is not None
+
+        sample_key = (
+            self._feedback_source,
+            feedback_snap["att_seq"],
+            feedback_snap["pos_seq"],
+        )
+        if sample_key == self._last_sample_key:
+            return   # 동일 source sample은 재적분/재발행하지 않는다.
+        self._last_sample_key = sample_key
+        self._publish_feedback_diagnostics(
+            mavlink_snapshot, feedback_snap, gazebo_snapshot
+        )
 
         if not self._ready:
-            self.obs_builder.reset(snap["pos_ned"], snap["att_quat_ned"])
+            self.obs_builder.reset(
+                feedback_snap["pos_ned"], feedback_snap["att_quat_ned"]
+            )
             initial_quat = self.obs_builder.attitude_in_waypoint_frame(
-                snap["att_quat_ned"]
+                feedback_snap["att_quat_ned"]
             ).unsqueeze(0)
             self.guidance.reset(torch.zeros(1, dtype=torch.long), initial_quat=initial_quat)
             self._ready = True
-            self._last_sample_time = max(snap["att_rx_time"], snap["pos_rx_time"])
-            self.get_logger().info("첫 healthy telemetry 확보 — frozen obs 발행 시작")
+            self._last_sample_time = self._feedback_sample_time(feedback_snap)
+            self.get_logger().info(
+                f"첫 healthy {self._feedback_source} feedback 확보 — "
+                "frozen obs 발행 시작"
+            )
 
-        sample_time = max(snap["att_rx_time"], snap["pos_rx_time"])
+        sample_time = self._feedback_sample_time(feedback_snap)
         dt = 0.0 if self._last_sample_time is None else sample_time - self._last_sample_time
         self._last_sample_time = sample_time
         if dt < 0.0:
@@ -1914,8 +2281,8 @@ class ObsNode(Node):
             return
 
         obs, debug = self.obs_builder.build(
-            snap["att_quat_ned"], snap["body_rates_ned"],
-            snap["pos_ned"], snap["vel_ned"], self.guidance,
+            feedback_snap["att_quat_ned"], feedback_snap["body_rates_ned"],
+            feedback_snap["pos_ned"], feedback_snap["vel_ned"], self.guidance,
             dt if self._control_active else 0.0,
             integrate=self._control_active,
             advance_waypoint=self._control_active,
@@ -2007,6 +2374,11 @@ class ObsNode(Node):
             self._trip_fault("PWM received without telemetry")
             return
         valid, reason = self._telemetry_valid(snap)
+        if not valid:
+            self._trip_fault(f"PWM blocked: {reason}")
+            return
+        feedback_snap = self._selected_feedback_snapshot(snap)
+        valid, reason = self._feedback_valid(feedback_snap)
         if not valid:
             self._trip_fault(f"PWM blocked: {reason}")
             return

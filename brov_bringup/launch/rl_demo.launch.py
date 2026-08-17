@@ -22,7 +22,8 @@ def generate_launch_description() -> LaunchDescription:
         name: LaunchConfiguration(name)
         for name in (
             "vehicle_config", "mission_file", "safety_config", "connection",
-            "send_pwm", "arm",
+            "feedback_source", "gazebo_truth_logging_enabled",
+            "gazebo_truth_topic", "gazebo_truth_max_age_s", "send_pwm", "arm",
         )
     }
     controller_config = LaunchConfiguration("controller_config")
@@ -52,6 +53,23 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "connection", default_value="udpout:192.168.2.2:14550"
+            ),
+            DeclareLaunchArgument(
+                "feedback_source",
+                default_value="mavlink_ekf",
+                choices=["mavlink_ekf", "gazebo_truth"],
+            ),
+            DeclareLaunchArgument(
+                "gazebo_truth_logging_enabled",
+                default_value="false",
+                choices=["true", "false"],
+            ),
+            DeclareLaunchArgument(
+                "gazebo_truth_topic",
+                default_value="/brov/sim/gazebo_odometry_raw",
+            ),
+            DeclareLaunchArgument(
+                "gazebo_truth_max_age_s", default_value="0.12"
             ),
             DeclareLaunchArgument(
                 "send_pwm", default_value="false", choices=["true", "false"]

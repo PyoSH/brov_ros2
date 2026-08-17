@@ -274,11 +274,9 @@ class LOSGuidance:
             raise ValueError("terminal hold gain/speed limit은 양수여야 함")
 
         self.num_envs, self.num_wp, _ = waypoints.shape
-        if heading_mode == "takeoff_then_align" and (
-            not loop or self.num_wp != 3
-        ):
+        if heading_mode == "takeoff_then_align" and self.num_wp != 3:
             raise ValueError(
-                "takeoff_then_align requires loop=true and exactly three waypoints"
+                "takeoff_then_align requires exactly three waypoints"
             )
         self._wp_idx = torch.zeros(self.num_envs, dtype=torch.long, device=device)
         # loop=False일 때만 의미 있음 — 마지막 웨이포인트 도달 후 True로 고정,
