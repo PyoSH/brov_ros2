@@ -1,0 +1,15 @@
+cmg_policy_node:
+  ros__parameters:
+    # Gazebo SITL validation envelope: full policy authority, only a small
+    # slew limit for smoothness. Do not reuse this file on the real vehicle
+    # -- see cmg_deploy_real_v1.yaml for the first-water envelope.
+    policy_path: ""
+    policy_sha256: "16f12c4a64f6876bb1be9a9cd52c604e0e777e25694c3089b5050909c9e84cef"
+    hover_mode: "HOVER_ORIGIN"
+    relative_target_xyz: [0.0, 0.0, 0.0]
+    target_quaternion_mode: "INITIAL"
+    action_abs_limit: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    pwm_abs_limit: 1.0
+    pwm_slew_rate_per_s: 4.0
+    obs_rate_hz: 25.0
+    log_every_n: 50

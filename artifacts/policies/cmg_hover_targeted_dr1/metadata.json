@@ -1,0 +1,20 @@
+{
+  "artifact_id": "cmg_hover_targeted_dr1",
+  "policy": "policy.pt",
+  "policy_sha256": "16f12c4a64f6876bb1be9a9cd52c604e0e777e25694c3089b5050909c9e84cef",
+  "required_executable": "cmg_policy_node",
+  "required_package": "cmg_deploy",
+  "input_dim": 17,
+  "output_dim": 8,
+  "quaternion_order": "WXYZ",
+  "action_semantics": "direct T1..T8, no wrench allocation",
+  "runtime_action_clip": [-1.0, 1.0],
+  "pwm_scaling": "applied centrally by brov_base PWM gateway, not by this policy/node",
+  "thruster_reversal": "applied centrally by brov_base PWM gateway (thruster_reversal_profile), not by this policy/node",
+  "training_family": "Targeted DR1",
+  "provenance": "fair POST-DR Gazebo run 20260813_164142 (g08r1_controller_v3_rpc50ms.py, policy_state_publisher.cc); ported from standalone cmg_RL_deploy at /home/pyo/Downloads/cmg_RL_deploy",
+  "source_manifest": "cmg_RL_deploy/policy/POLICY_MANIFEST.json, cmg_RL_deploy/DEPLOYMENT_MANIFEST.json",
+  "package_creation_date": "2026-08-13",
+  "integrated_into_brov_ros2_date": "2026-08-18",
+  "sim2sim_validation_status": "run 2026-08-18: integration lifecycle (arm/start/single-PWM-publisher/stop) works end to end. First test (state_source=mavlink_ekf) failed hover: GT drifted ~3m (+Z) and the abort-drift safety net stopped it. A second, GT-fed diagnostic path (cmg_deploy's state_source:=gazebo_truth_diagnostic, added specifically to isolate this) confirmed the cause: with clean Gazebo ground-truth state, the SAME policy held hover to max_drift_m=0.75, mean_drift_m=0.27 over a 40s hold (vs >3m/1.4m on MAVLink/EKF feedback). So the policy and thruster mapping are basically sound; the failure was driven by /brov/odometry/local_with_session being MAVLink/EKF-derived and not tracking the vehicle's true motion in that run (obs_node._publish_odometry always uses the MAVLink snapshot regardless of feedback_source). 0.75m max drift is still not tight hover -- do not treat this as fully validated -- but it is a fundamentally different, much more encouraging result than the EKF-fed run. See project_cmg_deploy memory."
+}

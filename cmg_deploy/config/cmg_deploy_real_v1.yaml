@@ -1,0 +1,18 @@
+cmg_policy_node:
+  ros__parameters:
+    # Conservative first-water-test envelope, mirroring the reasoning in
+    # brov_control/config/rl_controller_mk2_real_v1.yaml: this policy has
+    # not yet been validated in Gazebo SITL through this integration path
+    # (cmg_sim2sim.launch.py) at the time this file was written. Do not
+    # enlarge these values until sim2sim validation and staged,
+    # restrained single-axis real trials establish acceptable transients.
+    policy_path: ""
+    policy_sha256: "16f12c4a64f6876bb1be9a9cd52c604e0e777e25694c3089b5050909c9e84cef"
+    hover_mode: "HOVER_ORIGIN"
+    relative_target_xyz: [0.0, 0.0, 0.0]
+    target_quaternion_mode: "INITIAL"
+    action_abs_limit: [0.25, 0.25, 0.25, 0.2, 0.2, 0.2, 0.2, 0.25]
+    pwm_abs_limit: 0.3
+    pwm_slew_rate_per_s: 0.4
+    obs_rate_hz: 25.0
+    log_every_n: 50
