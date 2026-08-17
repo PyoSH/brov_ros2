@@ -28,6 +28,17 @@ _CASE_PROFILES = {
         "rl_package": "brov_control",
         "rl_config": "rl_controller.yaml",
     },
+    "a2": {
+        # Replaces the paper's Trial(b) (square_ballast): same case-a
+        # takeoff+loop geometry (attach a physical ballast weight before
+        # running), same bootstrap file -- only the mission-manager config
+        # differs, adding cruise_speed_per_leg to vary speed leg-to-leg
+        # within the one continuous out-and-back run.
+        "bootstrap": "mission_sim2swim_a.yaml",
+        "mission_manager": "mission_manager_sim2swim_a2.yaml",
+        "rl_package": "brov_control",
+        "rl_config": "rl_controller.yaml",
+    },
     "c": {
         "bootstrap": "mission_sim2swim_bootstrap.yaml",
         "mission_manager": "mission_manager_sim2swim_c.yaml",
@@ -55,7 +66,7 @@ def _include_selected_case(context):
         LaunchConfiguration("case").perform(context).strip().lower()
     )
     if selected_case not in _CASE_PROFILES:
-        raise RuntimeError("case must be exactly one of: a, c")
+        raise RuntimeError("case must be exactly one of: a, a2, c")
     if selected_case == "c" and not _is_true(
         LaunchConfiguration("allow_case_c").perform(context)
     ):
@@ -115,7 +126,7 @@ def _include_selected_case(context):
             "controller": selected_controller,
             "demo_case": selected_case,
             "auto_generate_case_a_path": (
-                "true" if selected_case == "a" else "false"
+                "true" if selected_case in {"a", "a2"} else "false"
             ),
             # These files provide only bootstrap frame/depth settings.  The
             # committed pool Path selected below replaces their waypoints and
@@ -171,9 +182,11 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "case",
                 default_value="a",
-                choices=["a", "c"],
+                choices=["a", "a2", "c"],
                 description=(
-                    "Resolved Sim2Swim profile: (a) takeoff+align loop or "
+                    "Resolved Sim2Swim profile: (a) takeoff+align loop, "
+                    "(a2) same loop with a ballast weight and "
+                    "cruise_speed_per_leg (replaces Trial(b)), or "
                     "(c) random-attitude-v2."
                 ),
             ),

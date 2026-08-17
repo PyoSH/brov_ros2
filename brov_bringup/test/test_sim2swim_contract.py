@@ -71,6 +71,32 @@ def _defaults(description) -> dict[str, str]:
     }
 
 
+def test_case_a2_reuses_case_a_geometry_with_per_leg_speed() -> None:
+    a_profile = _yaml_parameters(
+        "mission_manager_sim2swim_a.yaml", "brov_mission_manager"
+    )
+    a2_profile = _yaml_parameters(
+        "mission_manager_sim2swim_a2.yaml", "brov_mission_manager"
+    )
+
+    for key in (
+        "contract_version",
+        "heading_mode",
+        "loop",
+        "min_waypoints",
+        "max_waypoints",
+        "max_segment_length_m",
+        "pool_safe_min_xyz",
+        "pool_safe_max_xyz",
+    ):
+        assert a2_profile[key] == a_profile[key]
+
+    per_leg = a2_profile["cruise_speed_per_leg"]
+    assert len(per_leg) == a2_profile["max_waypoints"] == 3
+    assert all(0.0 < float(value) <= a2_profile["max_cruise_speed"] for value in per_leg)
+    assert per_leg != [a2_profile["cruise_speed"]] * 3
+
+
 def test_case_a_uses_position_v1_takeoff_then_align_profile() -> None:
     profile = _yaml_parameters(
         "mission_manager_sim2swim_a.yaml", "brov_mission_manager"
@@ -239,6 +265,14 @@ def test_case_c_is_fail_closed_without_explicit_opt_in(monkeypatch) -> None:
             "/share/brov_control/config/rl_controller.yaml",
         ),
         (
+            "a2",
+            "false",
+            "mission_sim2swim_a.yaml",
+            "mission_manager_sim2swim_a2.yaml",
+            None,
+            "/share/brov_control/config/rl_controller.yaml",
+        ),
+        (
             "c",
             "true",
             "mission_sim2swim_bootstrap.yaml",
@@ -263,7 +297,7 @@ def test_case_selects_rl_pool_profile(
     assert arguments["controller"] == "rl"
     assert arguments["demo_case"] == case
     assert arguments["auto_generate_case_a_path"] == (
-        "true" if case == "a" else "false"
+        "true" if case in ("a", "a2") else "false"
     )
     assert perform_substitutions(
         LaunchContext(),

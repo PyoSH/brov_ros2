@@ -57,21 +57,37 @@ as v2/v3/v4. Mean episode reward converged to ~810-828 by iteration 299
 (comparable to v4's ~818-828), action std reached 0.061 by iter 299
 (v4: 0.071) -- training was not destabilized by the new penalty term.
 
-## Deployment status: pending Gazebo Case-A A/B
+## Deployment status: Gazebo Case-A/Case-C complete, formal gate still unmet
 
-Not yet evaluated in Gazebo at the time this bundle was created. Compare
-against `sim2swim_deploy_v4_mk2_s42_i299` (whole-cycle action-bound GT
-78.9%/DVL 88.6%, force-clamp GT 17.7%/DVL 19.3%) once the Case-A GT/DVL-EKF
-runs complete, and re-run `diagnose_attitude_torque_budget.py` on the new
-bags to check whether pitch/yaw saturation and body-rate oscillation
-actually dropped -- that is the metric item D was designed to move, not
-just the aggregate whole-cycle fraction.
+Measured whole-cycle action-bound saturation GT 78.9%->**49.8%**, DVL-EKF
+88.6%->**53.6%**; force-clamp GT 17.7%->**0.8%**, DVL-EKF 19.3%->**2.2%**
+versus deploy_v4. Roll-axis saturation reached 0%; pitch remains the
+holdout (42-45%, plausibly a genuine torque-budget ceiling -- see
+`diagnose_attitude_torque_budget.py` output, body rate ~2.5x higher while
+pitch is pinned than while it isn't, on this bundle too). The same A-B+C-D
+staircase reproduced on the independently-built Case-C mission (5 m square,
+random attitude per corner), the first cross-geometry check in this
+investigation. Both are in `project_step2_brov_retrain_spec` memory and the
+"Found It" / "It Generalizes" artifacts.
 
-Keep this bundle for diagnosis and retraining comparison only until it
-passes the control-performance gate. It must not replace `demo_policy`, be
-promoted as the Gazebo default, or be used on the real vehicle. For any
-real-vehicle MK2 test regardless of which profile passes the Gazebo gate,
-use the conservative `rl_controller_mk2_real_v1.yaml` envelope
-(`action_abs_limit`/`pwm_abs_limit`/`pwm_slew_rate_per_s` all well below the
-unrestricted Gazebo-only `rl_controller_mk2_deploy_v2.yaml`), not the SITL
-config.
+The formal Case-A gate's strict absolute thresholds (<1% steady action-cap,
+<5% whole-cycle, <=10 deg attitude excursion) are still not met -- no
+checkpoint in this investigation (v2 through v5) has ever cleared them.
+
+## Real-vehicle use: explicitly approved for the case a-2 first-water test
+
+2026-08-18: the user reviewed the above (including that the formal gate is
+unmet and pitch is still the least-improved axis) and explicitly chose this
+checkpoint, on the real vehicle, for the case a-2 demo (case-a geometry +
+physical ballast weight + `cruise_speed_per_leg`, replacing Trial(b)/
+square_ballast). This is a deliberate, informed decision to proceed ahead
+of the formal gate, not an oversight -- do not silently revert to
+`demo_policy` or block this bundle's real-vehicle use on gate status alone.
+
+Launch with `controller:=rl_mk2` and the conservative
+`rl_controller_mk2_real_v1.yaml` envelope (the launch default for
+`rl_mk2` -- do not point it at the unrestricted Gazebo-only
+`rl_controller_mk2_deploy_v2.yaml`). Follow the standard shadow-mode-first
+procedure in the top-level README/DEMO_RUNBOOK.md: `send_pwm:=false` first,
+inspect telemetry/observation/wrench/PWM preview, then explicit
+PREPARE -> ARM -> START, `/brov/estop` ready throughout.

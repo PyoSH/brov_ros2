@@ -149,8 +149,8 @@ class DemoOrchestratorNode(Node):
         self._demo_case = str(
             self.get_parameter("demo_case").value
         ).strip().lower()
-        if self._demo_case not in {"a", "c"}:
-            raise ValueError("demo_case must be exactly 'a' or 'c'")
+        if self._demo_case not in {"a", "a2", "c"}:
+            raise ValueError("demo_case must be exactly 'a', 'a2', or 'c'")
         self._auto_path = bool(
             self.get_parameter("auto_generate_case_a_path").value
         )
@@ -579,10 +579,10 @@ class DemoOrchestratorNode(Node):
     def _prepare_impl(self) -> str:
         if self._control_active or self._active:
             raise DemoOperationError("control is active; STOP before PREPARE")
-        if self._demo_case != "a":
+        if self._demo_case not in {"a", "a2"}:
             raise DemoOperationError(
-                "automatic orchestration currently supports Case A only; "
-                "Case C remains on its explicit staged safety workflow"
+                "automatic orchestration currently supports Case A and A2 "
+                "only; Case C remains on its explicit staged safety workflow"
             )
         status = self._ensure_localized()
         envelope = self._wait_until(

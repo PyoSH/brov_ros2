@@ -110,6 +110,9 @@ class MissionManagerNode(Node):
         self.declare_parameter("localization_max_age_s", 1.0)
         self.declare_parameter("odometry_max_age_s", 0.5)
         self.declare_parameter("cruise_speed", 0.1)
+        # One value per waypoint (v1 contract only); empty means every leg
+        # uses cruise_speed above. See MissionSettings.cruise_speed_per_leg.
+        self.declare_parameter("cruise_speed_per_leg", [])
         self.declare_parameter("lookahead_dist", 0.4)
         self.declare_parameter("reach_threshold", 0.15)
         self.declare_parameter("max_cruise_speed", 0.3)
@@ -249,6 +252,10 @@ class MissionManagerNode(Node):
                     self.get_parameter("random_attitude_max_laps").value
                 ),
             )
+        cruise_speed_per_leg_param = [
+            float(value)
+            for value in self.get_parameter("cruise_speed_per_leg").value
+        ]
         self._mission_settings = MissionSettings(
             cruise_speed=float(self.get_parameter("cruise_speed").value),
             lookahead_dist=float(self.get_parameter("lookahead_dist").value),
@@ -256,6 +263,11 @@ class MissionManagerNode(Node):
             heading_mode=str(self.get_parameter("heading_mode").value).strip(),
             loop=bool(self.get_parameter("loop").value),
             random_attitude=random_attitude,
+            cruise_speed_per_leg=(
+                tuple(cruise_speed_per_leg_param)
+                if cruise_speed_per_leg_param
+                else None
+            ),
         )
         self._min_waypoints = int(self.get_parameter("min_waypoints").value)
         self._max_waypoints = int(self.get_parameter("max_waypoints").value)
@@ -548,6 +560,7 @@ class MissionManagerNode(Node):
             self._mission_settings,
             self._validation_settings.allowed_heading_modes,
             contract_version=self._contract_version,
+            num_waypoints=len(points),
             **self._mission_setting_limits,
         )
         return {
@@ -725,6 +738,11 @@ class MissionManagerNode(Node):
             for point in resolved_points
         ]
         resolved.cruise_speed = self._mission_settings.cruise_speed
+        resolved.cruise_speed_per_leg = (
+            list(self._mission_settings.cruise_speed_per_leg)
+            if self._mission_settings.cruise_speed_per_leg
+            else []
+        )
         resolved.lookahead_dist = self._mission_settings.lookahead_dist
         resolved.reach_threshold = self._mission_settings.reach_threshold
         resolved.heading_mode = self._mission_settings.heading_mode

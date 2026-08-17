@@ -14,7 +14,8 @@ BlueOS / ArduSub / DVL
             └─ PWM gateway
                   ↑
                   ├─ brov_control/model_based_controller_node
-                  └─ brov_control/policy_node
+                  ├─ brov_control/policy_node       (legacy contract)
+                  └─ brov_control/policy_node_mk2    (MK2 contract, T6 transform)
 
 BlueOS H264/RTP
   └─ brov_perception/camera_stream_node

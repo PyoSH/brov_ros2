@@ -50,6 +50,11 @@ class MissionSettings:
     heading_mode: str
     loop: bool
     random_attitude: RandomAttitudeSettings | None = None
+    # Optional per-waypoint-index speed override (v1 contract only -- one
+    # value per waypoint, indexed by the leg *departing* that index toward
+    # its next waypoint). None/empty means every leg uses the scalar
+    # cruise_speed above, unchanged from before this field existed.
+    cruise_speed_per_leg: tuple[float, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -125,6 +130,7 @@ def validate_mission_settings(
     max_cruise_speed: float | None = None,
     max_lookahead_dist: float | None = None,
     max_reach_threshold: float | None = None,
+    num_waypoints: int | None = None,
 ) -> None:
     for name, value, maximum in (
         ("cruise_speed", settings.cruise_speed, max_cruise_speed),
@@ -141,6 +147,28 @@ def validate_mission_settings(
             if numeric > maximum:
                 raise ValueError(
                     f"{name}={numeric:g} exceeds operational maximum {maximum:g}"
+                )
+    if settings.cruise_speed_per_leg is not None:
+        if contract_version != POOL_POSITION_MISSION_V1:
+            raise ValueError(
+                "cruise_speed_per_leg is only defined for mission v1"
+            )
+        per_leg = settings.cruise_speed_per_leg
+        if len(per_leg) == 0:
+            raise ValueError("cruise_speed_per_leg must not be empty if set")
+        if num_waypoints is not None and len(per_leg) != num_waypoints:
+            raise ValueError(
+                f"cruise_speed_per_leg has {len(per_leg)} values; expected "
+                f"one per waypoint ({num_waypoints})"
+            )
+        for index, value in enumerate(per_leg):
+            numeric = _finite_float(value, f"cruise_speed_per_leg[{index}]")
+            if numeric <= 0.0:
+                raise ValueError(f"cruise_speed_per_leg[{index}] must be positive")
+            if max_cruise_speed is not None and numeric > max_cruise_speed:
+                raise ValueError(
+                    f"cruise_speed_per_leg[{index}]={numeric:g} exceeds "
+                    f"operational maximum {max_cruise_speed:g}"
                 )
     contract_version = str(contract_version).strip()
     contract_modes = CONTRACT_HEADING_MODES.get(contract_version)
@@ -476,10 +504,12 @@ def canonical_plan_content(
         raise ValueError("frame_id must be a non-empty string")
     canonical_frame = frame_id.strip()
     contract_version = str(contract_version).strip()
+    points = list(points)
     validate_mission_settings(
         settings,
         CONTRACT_HEADING_MODES.get(contract_version, ()),
         contract_version=contract_version,
+        num_waypoints=len(points),
     )
 
     payload = {
@@ -492,6 +522,10 @@ def canonical_plan_content(
         "heading_mode": settings.heading_mode,
         "loop": bool(settings.loop),
     }
+    if settings.cruise_speed_per_leg is not None:
+        payload["cruise_speed_per_leg"] = [
+            float(value) for value in settings.cruise_speed_per_leg
+        ]
     if contract_version == POOL_POSITION_MISSION_V2:
         random = settings.random_attitude
         assert random is not None

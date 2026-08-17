@@ -1,5 +1,27 @@
 # Sim2Sim and Retraining Handoff
 
+## Status: superseded by the A/B/C/D retrain investigation
+
+This document is a historical handoff written before the A(episode
+redesign)/B(DVL sensor DR)/C(thruster DR)/D(raw-actor-overflow penalty)
+retrain investigation. It analyzes the original legacy `demo_policy`
+(SHA-256 `0d89f327...`, section 2 below), not any of the MK2-contract
+`sim2swim_deploy_v2..v5_mk2_s42_i299` bundles.
+
+Section 10's investigation plan and section 12's pre-pool-trial acceptance
+criteria describe work that **has since been carried out**: retraining
+across v2-v5, Case-A Gazebo GT/DVL-EKF validation, and an independent
+Case-C (5 m square) cross-validation. None of the open hypotheses in
+section 8 or the acceptance criteria in section 12 were re-verified
+against this document's own checklist when that work happened, so treat
+this page as background/methodology reference only, not as the current
+status or an unstarted TODO list. For current status, results, and the
+real-vehicle decision, see each policy bundle's own
+`artifacts/policies/sim2swim_deploy_v*_mk2_s42_i299/README.md` (v5's in
+particular records the case a-2 real-vehicle approval) and
+[SIM2SWIM_DEMO.md](SIM2SWIM_DEMO.md). The Ubuntu/ROS setup steps in
+section 9 remain generally applicable.
+
 ## 1. Purpose
 
 This document records the current analysis of the gap between:

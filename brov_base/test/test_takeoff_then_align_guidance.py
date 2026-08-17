@@ -122,3 +122,65 @@ def test_takeoff_can_finish_one_horizontal_leg_without_reversal() -> None:
     assert bool(guidance.mission_complete[0])
     assert int(guidance._wp_idx[0]) == 1
     assert hold_v[0].tolist() == pytest.approx([0.0, 0.0, 0.0])
+
+
+def test_cruise_speed_per_leg_uses_different_speed_per_horizontal_leg() -> None:
+    waypoints = torch.tensor(
+        [[[0.0, 0.0, 0.0], [0.0, 0.0, 0.2], [2.0, 0.0, 0.2]]],
+        dtype=torch.float32,
+    )
+    guidance = LOSGuidance(
+        waypoints,
+        "cpu",
+        cruise_speed=0.5,
+        cruise_speed_per_leg=[0.5, 0.25, 0.5],
+        lookahead_dist=0.4,
+        reach_threshold=0.15,
+        heading_mode="takeoff_then_align",
+        loop=True,
+    )
+    identity = mu.identity_quat(1, "cpu")
+    guidance.reset(torch.tensor([0]), initial_quat=identity)
+
+    guidance.compute(
+        torch.tensor([[0.0, 0.0, 0.0]]), identity, advance_waypoint=True
+    )
+    outbound_v, _ = guidance.compute(
+        torch.tensor([[0.0, 0.0, 0.2]]), identity, advance_waypoint=True
+    )
+    assert int(guidance._wp_idx[0]) == 1
+    assert float(outbound_v[0, :2].norm()) == pytest.approx(0.25, abs=1e-5)
+
+    return_v, _ = guidance.compute(
+        torch.tensor([[2.0, 0.0, 0.2]]), identity, advance_waypoint=True
+    )
+    assert int(guidance._wp_idx[0]) == 2
+    assert float(return_v[0, :2].norm()) == pytest.approx(0.5, abs=1e-5)
+
+
+def test_cruise_speed_per_leg_rejects_wrong_length() -> None:
+    waypoints = torch.tensor(
+        [[[0.0, 0.0, 0.0], [0.0, 0.0, 0.2], [2.0, 0.0, 0.2]]],
+        dtype=torch.float32,
+    )
+    with pytest.raises(ValueError, match="expected one per waypoint"):
+        LOSGuidance(
+            waypoints,
+            "cpu",
+            cruise_speed_per_leg=[0.5, 0.25],
+            heading_mode="takeoff_then_align",
+        )
+
+
+def test_cruise_speed_per_leg_rejects_non_positive() -> None:
+    waypoints = torch.tensor(
+        [[[0.0, 0.0, 0.0], [0.0, 0.0, 0.2], [2.0, 0.0, 0.2]]],
+        dtype=torch.float32,
+    )
+    with pytest.raises(ValueError, match="must be positive"):
+        LOSGuidance(
+            waypoints,
+            "cpu",
+            cruise_speed_per_leg=[0.5, 0.0, 0.5],
+            heading_mode="takeoff_then_align",
+        )

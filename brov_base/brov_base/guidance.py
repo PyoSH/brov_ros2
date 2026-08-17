@@ -12,6 +12,7 @@ Z-up 변환 역시 `ObservationBuilder`가 이 함수의 출력에 대해 별도
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 import hashlib
 import math
@@ -204,6 +205,7 @@ class LOSGuidance:
         device,
         lookahead_dist: float = 1.0,
         cruise_speed: float = 0.5,
+        cruise_speed_per_leg: Sequence[float] | None = None,
         reach_threshold: float = 0.5,
         heading_mode: str = "align",
         loop: bool = True,
@@ -278,6 +280,23 @@ class LOSGuidance:
             raise ValueError(
                 "takeoff_then_align requires exactly three waypoints"
             )
+        if cruise_speed_per_leg is None:
+            self._speed_per_leg: torch.Tensor | None = None
+        else:
+            per_leg = list(cruise_speed_per_leg)
+            if len(per_leg) != self.num_wp:
+                raise ValueError(
+                    f"cruise_speed_per_leg has {len(per_leg)} values; "
+                    f"expected one per waypoint ({self.num_wp})"
+                )
+            per_leg_tensor = torch.as_tensor(
+                per_leg, dtype=torch.float32, device=device
+            )
+            if not torch.isfinite(per_leg_tensor).all() or bool(
+                (per_leg_tensor <= 0.0).any()
+            ):
+                raise ValueError("cruise_speed_per_leg values must be positive")
+            self._speed_per_leg = per_leg_tensor
         self._wp_idx = torch.zeros(self.num_envs, dtype=torch.long, device=device)
         # loop=False일 때만 의미 있음 — 마지막 웨이포인트 도달 후 True로 고정,
         # 이후 final waypoint position hold로 전환한다. 실배포 미션은 보통 한 번
@@ -552,7 +571,12 @@ class LOSGuidance:
         los_point = cur_wp + look_s * seg_dir
 
         to_los = los_point - pos_env
-        v_d_world = self._speed * to_los / to_los.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        current_speed = (
+            self._speed
+            if self._speed_per_leg is None
+            else self._speed_per_leg[self._wp_idx].unsqueeze(-1)
+        )
+        v_d_world = current_speed * to_los / to_los.norm(dim=-1, keepdim=True).clamp_min(1e-6)
 
         if not self._loop:
             # 마지막 waypoint에 한 번 도달했더라도 속도 목표를 0으로 고정하면

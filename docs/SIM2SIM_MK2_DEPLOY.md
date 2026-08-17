@@ -2,23 +2,48 @@
 
 The MK2 path is isolated from the legacy `demo_policy` path.
 
-## Status
+## Status (updated 2026-08-18 -- older than this is stale)
 
-The deployment mechanics are verified, but the current policy candidate is
-**rejected for control performance**.  Fresh Gazebo GT and no-GPS
-Water-Linked-aligned DVL/EKF runs both completed the
-takeoff/outbound/turn/return lifecycle.  The GT run nevertheless spent about
-99% of the cycle with at least one bounded action and clamped requested
-thruster force about 30% of the time.  Do not use this policy on the real
-vehicle and do not replace `demo_policy` with it.
+This page originally described `sim2swim_deploy_v2_mk2_s42_i49` (the first,
+50-iteration MK2 checkpoint), which was ~99% action-saturated and rejected.
+That checkpoint is long superseded. Four more candidates exist now, each in
+its own `artifacts/policies/sim2swim_deploy_v{2,3,4,5}_mk2_s42_i299/`
+bundle with its own README documenting exactly what was tried and measured
+-- read the bundle's own README before trusting any summary here, including
+this one.
 
-The full metrics and causal checks are recorded in the training workspace at
-`step_2_BROV/MK2_SIM2SIM_DEPLOY_RESULT.md`.
+Deployment mechanics (artifact-contract verification, T6 transform,
+fail-closed loading) are verified and unchanged across all of them. Control
+performance improved substantially in sequence:
+
+- v2 (i299): ~99% whole-cycle action-bound saturation, matches i49.
+- v3 (item A, episode redesign): no improvement (~99%, force-clamp worse).
+- v4 (A + DVL/thruster domain randomization): action-bound down to
+  ~79-89%, force-clamp ~17-19%.
+- v5 (A+B+C + raw-actor-overflow penalty): action-bound down to ~50-55%,
+  force-clamp ~1-2%. Pitch axis remains the least-improved (~42-45%,
+  plausibly a torque-budget ceiling, not yet confirmed).
+
+None of v2-v5 have passed the formal Gazebo Case-A gate (strict absolute
+thresholds, <1%/<5% depending on window). **v5 was nonetheless explicitly
+chosen by the user for a real-vehicle first-water test** (case a-2, see
+`docs/SIM2SWIM_DEMO.md`) as an informed decision, not an oversight -- see
+that bundle's README for the full record. Do not treat "gate not passed"
+as equivalent to "rejected" for v5; it is a known, accepted, documented
+risk for that specific real-vehicle test only. Do not promote any of
+v2-v5 to replace `demo_policy` as a default without a separate decision.
+
+Full metrics, the Case-A methodology, and the Case-C (5 m square,
+random-attitude-per-corner) cross-validation that reproduced the same
+improvement pattern are recorded in the training workspace's
+`project_step2_brov_retrain_spec` notes and the "Found It" / "It
+Generalizes" result pages, not in this repository.
 
 ## Runtime components
 
-- artifact:
-  `artifacts/policies/sim2swim_deploy_v2_mk2_s42_i49/policy_raw_flu_mk2.pt`
+- artifact: one of `artifacts/policies/sim2swim_deploy_v{2,3,4,5}_mk2_s42_i299/
+  policy_raw_flu_mk2.pt` -- pick per the "Status" section above and each
+  bundle's own README, not by habit or by what an older example used.
 - executable: `brov_control policy_node_mk2`
 - launch: `brov_bringup sim2sim_mk2_case_a.launch.py`
 - mission: `mission_sim2sim_mk2_case_a_0p5.yaml`
@@ -43,7 +68,7 @@ colcon build \
 source install_mk2/setup.bash
 
 export BROV_MK2_POLICY_PATH=$PWD/artifacts/policies/\
-sim2swim_deploy_v2_mk2_s42_i49/policy_raw_flu_mk2.pt
+sim2swim_deploy_v5_mk2_s42_i299/policy_raw_flu_mk2.pt
 python3 docker/check_environment.py
 ```
 

@@ -247,6 +247,84 @@ def test_canonical_plan_rejects_empty_frame_id(frame_id) -> None:
         )
 
 
+def test_cruise_speed_per_leg_included_in_canonical_content_when_set() -> None:
+    points = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.2), (2.0, 0.0, 0.2))
+    per_leg_mission = MissionSettings(
+        cruise_speed=0.5,
+        lookahead_dist=0.4,
+        reach_threshold=0.15,
+        heading_mode="takeoff_then_align",
+        loop=True,
+        cruise_speed_per_leg=(0.5, 0.25, 0.5),
+    )
+    with_per_leg = canonical_plan_content(points, per_leg_mission)
+    without_per_leg = canonical_plan_content(
+        points,
+        MissionSettings(
+            cruise_speed=0.5,
+            lookahead_dist=0.4,
+            reach_threshold=0.15,
+            heading_mode="takeoff_then_align",
+            loop=True,
+        ),
+    )
+    payload = json.loads(with_per_leg)
+    assert payload["cruise_speed_per_leg"] == [0.5, 0.25, 0.5]
+    assert "cruise_speed_per_leg" not in json.loads(without_per_leg)
+    assert with_per_leg != without_per_leg
+
+
+def test_cruise_speed_per_leg_length_must_match_waypoint_count() -> None:
+    points = ((0.0, 0.0, 0.0), (0.0, 0.0, 0.2), (2.0, 0.0, 0.2))
+    mission = MissionSettings(
+        cruise_speed=0.5,
+        lookahead_dist=0.4,
+        reach_threshold=0.15,
+        heading_mode="takeoff_then_align",
+        loop=True,
+        cruise_speed_per_leg=(0.5, 0.25),
+    )
+    with pytest.raises(ValueError, match="expected one per waypoint"):
+        canonical_plan_content(points, mission)
+
+
+def test_cruise_speed_per_leg_rejects_non_positive_and_over_max() -> None:
+    with pytest.raises(ValueError, match="must be positive"):
+        validate_mission_settings(
+            MissionSettings(
+                0.5, 0.4, 0.15, "takeoff_then_align", True,
+                cruise_speed_per_leg=(0.5, 0.0, 0.5),
+            ),
+            ("takeoff_then_align",),
+        )
+    with pytest.raises(ValueError, match="exceeds operational maximum"):
+        validate_mission_settings(
+            MissionSettings(
+                0.5, 0.4, 0.15, "takeoff_then_align", True,
+                cruise_speed_per_leg=(0.5, 0.9, 0.5),
+            ),
+            ("takeoff_then_align",),
+            max_cruise_speed=0.6,
+        )
+
+
+def test_cruise_speed_per_leg_rejected_for_v2_contract() -> None:
+    with pytest.raises(ValueError, match="only defined for mission v1"):
+        validate_mission_settings(
+            MissionSettings(
+                cruise_speed=0.05,
+                lookahead_dist=0.15,
+                reach_threshold=0.08,
+                heading_mode="random_at_waypoint",
+                loop=True,
+                random_attitude=RANDOM_ATTITUDE,
+                cruise_speed_per_leg=(0.05, 0.05, 0.05, 0.05),
+            ),
+            ("random_at_waypoint",),
+            contract_version=POOL_POSITION_MISSION_V2,
+        )
+
+
 def test_heading_mode_allowlist() -> None:
     validate_mission_settings(MISSION, VALIDATION.allowed_heading_modes)
     with pytest.raises(ValueError, match="not allowed"):

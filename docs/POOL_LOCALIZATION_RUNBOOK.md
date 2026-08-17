@@ -144,7 +144,10 @@ ros2 launch brov_bringup pool_localized_demo.launch.py \
   arm:=false
 ```
 
-RL을 검증할 때는 `controller:=rl`만 사용한다. model과 RL을 동시에 실행하지 않는다.
+RL을 검증할 때는 legacy 계약이면 `controller:=rl`, MK2 계약
+(`sim2swim_deploy_v2..v5_mk2_*`)이면 `controller:=rl_mk2`를 사용한다. 자세한
+선택 기준과 policy artifact 경로는 [SIM2SWIM_DEMO.md](SIM2SWIM_DEMO.md)를
+따른다. model과 RL을 동시에 실행하지 않는다.
 이 launch는 tilt confirmation, initialize, validate, commit, PREPARE, ARM 또는 START를
 호출하지 않는다.
 

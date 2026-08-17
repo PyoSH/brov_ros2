@@ -114,7 +114,8 @@ brov_base
 
 brov_control
   model_based_controller_node
-  policy_node
+  policy_node        # legacy contract, no T6 action-frame transform
+  policy_node_mk2    # MK2 contract (all sim2swim_deploy_v2..v5_mk2_* artifacts)
 
 brov_perception
   camera_stream_node
@@ -151,8 +152,16 @@ brov_bringup
 ## Runtime data and policy contract
 
 - Vehicle/thruster parameters are read-only package resources in `brov_base`.
-- The demo TorchScript policy and its checksum/schema are in
-  `artifacts/policies/demo_policy/`.
+- The legacy demo TorchScript policy and its checksum/schema are in
+  `artifacts/policies/demo_policy/` (runs with `policy_node`,
+  `controller:=rl`).
+- MK2-contract policy bundles (`sim2swim_deploy_v2_mk2_s42_i299` through
+  `_v5_mk2_s42_i299` at the time of writing) live alongside it under
+  `artifacts/policies/`, one directory per bundle, each with its own
+  `README.md` documenting Gazebo Case-A/Case-C validation status. These run
+  with `policy_node_mk2`, `controller:=rl_mk2` -- see
+  `docs/SIM2SWIM_DEMO.md` for the controller-selection gotcha (the launch
+  default is the legacy `rl` controller, not `rl_mk2`).
 - Calibration, bags, and logs are written under `runtime/` and excluded from Git.
 - Docker defines `BROV_DATA_DIR=/workspace/brov_ros2/runtime` and
   `BROV_POLICY_PATH` for the included demo policy.

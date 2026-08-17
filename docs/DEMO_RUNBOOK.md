@@ -1,5 +1,12 @@
 # Sim2Real demo runbook
 
+이 문서는 `sim2real_demo.launch.py`의 legacy `model`/`rl`(`policy_node`)
+controller 경로를 다룬다. MK2 policy(`policy_node_mk2`, `controller:=rl_mk2`,
+`sim2swim_deploy_v2..v5_mk2_s42_i299` artifact), pool-localized 배치, Case
+A/A2/C Sim2Swim 데모는 이 문서가 아니라
+[SIM2SWIM_DEMO.md](SIM2SWIM_DEMO.md)를 따른다. Preflight, estop, build/test,
+camera/ArUco 절차(1, 2, 6, 7절)는 controller 종류와 무관하게 공통이다.
+
 ## 1. Preflight
 
 - Vehicle submerged; propellers and tether clear.
@@ -89,7 +96,14 @@ ros2 service call /brov/model_based/start std_srvs/srv/Trigger "{}"
 ARM rechecks gates and sends neutral before arming. START opens the control gate
 but never arms. The full pool-localized profile adds PREPARE before these steps.
 
-## 5. RL control
+## 5. RL control (legacy `policy_node` contract only)
+
+This section is the legacy `rl_demo.launch.py` / `policy_node` path
+(`demo_policy` artifact, no T6 action-frame transform). It is not the MK2
+contract used for the current Sim2Swim work -- for `policy_node_mk2` /
+`controller:=rl_mk2` / any `sim2swim_deploy_v*_mk2_*` artifact, use
+[SIM2SWIM_DEMO.md](SIM2SWIM_DEMO.md) instead; the two controllers are not
+interchangeable and must never run simultaneously.
 
 Stop the model launch completely, then start the RL launch:
 

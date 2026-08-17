@@ -188,7 +188,7 @@ def generate_launch_description() -> LaunchDescription:
                 ),
             ),
             DeclareLaunchArgument(
-                "demo_case", default_value="a", choices=["a", "c"]
+                "demo_case", default_value="a", choices=["a", "a2", "c"]
             ),
             DeclareLaunchArgument(
                 "auto_generate_case_a_path",

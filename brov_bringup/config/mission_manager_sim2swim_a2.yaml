@@ -1,0 +1,44 @@
+brov_mission_manager:
+  ros__parameters:
+    # a-2: same P0->P1 one-shot takeoff + P1<->P2 loop geometry as case a
+    # (same segment_length/target_z, still within pool_safe bounds) --
+    # replaces the paper's Trial(b) (square_ballast) as a simpler ballast
+    # robustness check: attach a physical ballast weight before running,
+    # keep the straight out-and-back path, and vary speed leg-to-leg within
+    # the same continuous run instead of running the full square.
+    contract_version: brov_pool_position_mission_v1
+    pool_frame: pool
+    odom_frame: odom
+    base_frame: base_link
+    aligned_odometry_topic: /brov/localization/odometry_pool_with_alignment
+
+    orientation_support_enabled: false
+    identity_orientation_tolerance: 0.001
+
+    pool_safe_min_xyz: [0.35, 0.30, 0.20]
+    pool_safe_max_xyz: [3.65, 1.40, 0.90]
+    max_first_point_distance_m: 0.30
+    min_segment_length_m: 0.05
+    max_segment_length_m: 2.0
+    min_waypoints: 3
+    max_waypoints: 3
+
+    localization_max_age_s: 1.0
+    odometry_max_age_s: 0.5
+
+    # cruise_speed is the fallback used for depth_speed_limit/
+    # terminal_speed_limit defaults (and for canonical-plan validation
+    # ceilings); cruise_speed_per_leg overrides the horizontal LOS speed on
+    # a per-waypoint-index basis: [0]=takeoff leg (moot -- vertical motion
+    # is governed by depth_speed_limit, not this), [1]=outbound (P1->P2,
+    # slower first pass), [2]=return (P2->P1, back to normal case-a speed).
+    cruise_speed: 0.50
+    cruise_speed_per_leg: [0.50, 0.25, 0.50]
+    lookahead_dist: 0.40
+    reach_threshold: 0.15
+    max_cruise_speed: 0.60
+    max_lookahead_dist: 1.00
+    max_reach_threshold: 0.50
+    heading_mode: takeoff_then_align
+    loop: true
+    allowed_heading_modes: [takeoff_then_align]

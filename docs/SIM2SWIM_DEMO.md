@@ -42,6 +42,19 @@ Vision pose를 policy 입력에 추가하지 않는다. 학습된 16-D observati
 
 따라서 새 observation 버전이나 policy 재학습 없이 수조 절대 경로를 사용할 수 있다.
 
+## Controller: `controller:=rl` vs `controller:=rl_mk2`
+
+`sim2swim_demo.launch.py`의 `controller` 인자 기본값은 **`rl`(레거시
+`policy_node`, T6 action-frame 변환 없음)**이다. `demo_policy`나
+T6 이전 체크포인트가 아니면 이 기본값으로는 안 돌아간다. MK2 계약으로
+학습된 정책(`sim2swim_deploy_v2/v3/v4/v5_mk2_*` 전부)은 반드시
+**`controller:=rl_mk2`**를 명시해야 `policy_node_mk2`가 실행되고
+`rl_controller_mk2_real_v1.yaml`(보수적 첫 실기 테스트 envelope:
+`action_abs_limit=[0.3,0.3,0.3,0.2,0.15,0.2]`, `pwm_abs_limit=0.35`,
+`pwm_slew_rate_per_s=0.4`)이 적용된다. 이 문서의 모든 case A/A2 예제
+명령어에 `controller:=rl_mk2`를 포함해 두었다 — 지우면 조용히 레거시
+경로로 넘어가므로 빠뜨리지 않는다.
+
 ## Case profile
 
 ### Case A: position-v1 / takeoff_then_align
@@ -55,12 +68,33 @@ Vision pose를 policy 입력에 추가하지 않는다. 학습된 16-D observati
 - `P0→P1` 수직 구간은 별도 `depth_speed_limit=0.05 m/s`를 유지한다.
 - 목표 높이에 도달한 뒤 두 수평점 사이를 왕복하며, 자동 종료가 없으므로 작업자가 정지한다.
 
-자동 경로의 보수적 기본 수평 길이는 0.20 m이다. `reach_threshold=0.15 m`보다
-충분히 긴 왕복을 눈으로 확인하려면 수조·tether 여유를 측량한 뒤 launch에
-`case_a_segment_length_m:=0.80`처럼 명시한다.
+자동 경로의 기본 수평 길이는 `case_a_segment_length_m=2.0 m`이다(Gazebo
+Case-A/Isaac 커리큘럼과 동일 스케일에 맞춘 값 — `mission_manager_sim2swim_a.yaml`의
+`max_segment_length_m=2.0`이 상한이라 여유가 없다). 실제 수조가 이 길이를
+감당 못 하면 launch에 `case_a_segment_length_m:=0.80`처럼 줄여서 명시한다.
 
-기존 2.0 m 직선 실험을 수행하려면 첫 점 근처에 로봇을 놓고, 실제 pool bounds와
-선체·tether 여유를 확인한 두 절대점을 입력한다.
+### Case A2: case A + 무게추 + 구간별 가변 속도 (Trial(b) 대체)
+
+- contract: Case A와 동일(`brov_pool_position_mission_v1`), 지오메트리도 완전히 동일
+- 다른 점은 오직 `mission_manager_sim2swim_a2.yaml`의
+  `cruise_speed_per_leg: [0.50, 0.25, 0.50]` — outbound(P1→P2) 0.25 m/s로
+  느리게, return(P2→P1) 0.50 m/s로 정상 속도. 한 번의 연속 데모 안에서
+  구간마다 다른 속도로 추종이 유지되는지 보여준다.
+- 논문 Trial(b)(square_ballast)를 그대로 재현하는 대신 채택 — 사각 경로 대신
+  case A의 검증된 직선 왕복을 재사용하고, 실제 무게추를 로봇에 물리적으로
+  부착한 뒤 진행한다(코드가 대신할 수 없는 부분 — 잠수 전에 직접 부착).
+- `case_a_target_pool_z_m`/`case_a_segment_length_m`는 case A와 동일한 launch
+  인자로 공유된다.
+
+## Real-vehicle 정책 선택 시 주의
+
+MK2 정책은 아직 어느 버전(v2~v5)도 공식 Gazebo Case-A 게이트를 통과하지
+못했다(`project_step2_brov_retrain_spec` 참조). deploy_v5는 v4 대비
+whole-cycle action-bound saturation이 크게 개선됐지만(GT 78.9%→49.8%)
+pitch 축은 여전히 42~45% 남아 있다. 실기에 어떤 체크포인트를 올릴지는
+게이트 통과 여부와 무관하게 매번 명시적으로 결정한다 — 이 문서의 예제는
+`sim2swim_deploy_v5_mk2_s42_i299`를 가정하지만 다른 아티팩트를 쓰려면
+`policy_path`/`BROV_POLICY_PATH`만 바꾸면 된다.
 
 ### Case C: deterministic random-attitude-v2
 
@@ -137,10 +171,11 @@ colcon build --symlink-install --packages-select \
 source install/setup.bash
 ```
 
-Policy artifact를 지정한다.
+Policy artifact를 지정한다. MK2 정책(v2~v5)을 쓸 때는 아래처럼 해당 번들의
+경로를 가리키고, launch에는 반드시 `controller:=rl_mk2`를 같이 준다.
 
 ```bash
-export BROV_POLICY_PATH=/workspace/brov_ros2/artifacts/policies/demo_policy/policy.pt
+export BROV_POLICY_PATH=/workspace/brov_ros2/artifacts/policies/sim2swim_deploy_v5_mk2_s42_i299/policy_raw_flu_mk2.pt
 ```
 
 다른 launch와 camera receiver가 남아 있지 않은지 확인한다. 실제 구동 전에는 estop
@@ -155,9 +190,21 @@ ros2 topic pub --once /brov/estop std_msgs/msg/Empty "{}"
 먼저 실제 PWM과 ROS arm 권한을 모두 끈다.
 
 ```bash
-# Case A
+# Case A (MK2 정책)
 ros2 launch brov_bringup sim2swim_demo.launch.py \
   case:=a \
+  controller:=rl_mk2 \
+  connection:=udpout:192.168.2.2:14550 \
+  send_pwm:=false \
+  arm:=false \
+  rviz:=false
+```
+
+```bash
+# Case A2 (case A + 무게추 부착 + 구간별 가변 속도)
+ros2 launch brov_bringup sim2swim_demo.launch.py \
+  case:=a2 \
+  controller:=rl_mk2 \
   connection:=udpout:192.168.2.2:14550 \
   send_pwm:=false \
   arm:=false \
@@ -180,11 +227,12 @@ ros2 launch brov_bringup sim2swim_demo.launch.py \
 정확히 하나씩 실행한다. RViz가 필요한 Linux display 환경에서만 `rviz:=true`를
 사용한다.
 
-### Case A 간소화된 운영 경로
+### Case A/A2 간소화된 운영 경로
 
-Case A의 정상 데모에서는 내부 localization/mission/control 서비스를 하나씩 직접
-호출하지 않는다. `brov_demo_orchestrator`가 기존 fail-closed 서비스를 순서대로
-호출하며, launch 자체는 어떤 서비스도 자동 호출하지 않는다.
+Case A와 A2 둘 다 정상 데모에서는 내부 localization/mission/control 서비스를
+하나씩 직접 호출하지 않는다(지오메트리가 완전히 같아서 A2도 A와 동일한
+자동경로생성을 그대로 쓴다). `brov_demo_orchestrator`가 기존 fail-closed
+서비스를 순서대로 호출하며, launch 자체는 어떤 서비스도 자동 호출하지 않는다.
 
 로봇이 disarm·정지 상태이고, camera가 물리적으로 보정된 neutral이며 tag 2가 깨끗하게
 보이는 것을 확인한 뒤 다음을 호출한다. 이 PREPARE 호출 자체가 camera neutral에 대한
@@ -380,9 +428,21 @@ Shadow launch를 완전히 종료한 뒤 실제 profile을 다시 실행한다. 
 PREPARE를 전부 다시 수행해야 한다.
 
 ```bash
-# Case A actual profile
+# Case A actual profile (MK2 정책)
 ros2 launch brov_bringup sim2swim_demo.launch.py \
   case:=a \
+  controller:=rl_mk2 \
+  connection:=udpout:192.168.2.2:14550 \
+  send_pwm:=true \
+  arm:=true \
+  rviz:=false
+```
+
+```bash
+# Case A2 actual profile
+ros2 launch brov_bringup sim2swim_demo.launch.py \
+  case:=a2 \
+  controller:=rl_mk2 \
   connection:=udpout:192.168.2.2:14550 \
   send_pwm:=true \
   arm:=true \

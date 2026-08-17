@@ -259,6 +259,10 @@ class ObsNode(Node):
         )
         self.declare_parameter("waypoints", "0,0,0;3,0,0")
         self.declare_parameter("cruise_speed", 0.2)
+        # One value per waypoint (direct-param bootstrap path only); empty
+        # means every leg uses cruise_speed above. Mirrors
+        # MissionSettings.cruise_speed_per_leg on the resolved-mission path.
+        self.declare_parameter("cruise_speed_per_leg", [])
         self.declare_parameter("heading_mode", "straight")
         self.declare_parameter("waypoint_frame", "start_heading")
         self.declare_parameter("waypoint_bounds_enabled", False)
@@ -666,9 +670,14 @@ class ObsNode(Node):
             integral_att_limit=float(self.get_parameter("integral_att_limit").value),
             waypoint_frame=waypoint_frame,
         )
+        _cruise_speed_per_leg = [
+            float(value)
+            for value in self.get_parameter("cruise_speed_per_leg").value
+        ]
         self.guidance = LOSGuidance(
             waypoints, "cpu",
             cruise_speed=self.get_parameter("cruise_speed").value,
+            cruise_speed_per_leg=_cruise_speed_per_leg or None,
             lookahead_dist=self.get_parameter("lookahead_dist").value,
             heading_mode=heading_mode,
             reach_threshold=self.get_parameter("reach_threshold").value,
@@ -1565,6 +1574,24 @@ class ObsNode(Node):
                 or abs(canonical_value - message_value) > 1e-6
             ):
                 return f"resolved mission canonical {name} mismatch"
+        message_per_leg = [float(value) for value in mission.cruise_speed_per_leg]
+        canonical_per_leg = canonical.get("cruise_speed_per_leg")
+        if message_per_leg:
+            if not isinstance(canonical_per_leg, list):
+                return "resolved mission canonical cruise_speed_per_leg missing"
+            try:
+                canonical_per_leg_values = [float(v) for v in canonical_per_leg]
+            except (TypeError, ValueError):
+                return "resolved mission canonical cruise_speed_per_leg invalid"
+            if len(canonical_per_leg_values) != len(message_per_leg) or any(
+                not math.isfinite(a) or abs(a - b) > 1e-6
+                for a, b in zip(canonical_per_leg_values, message_per_leg)
+            ):
+                return "resolved mission canonical cruise_speed_per_leg mismatch"
+            if len(message_per_leg) != points.shape[0]:
+                return "resolved mission cruise_speed_per_leg length mismatch"
+        elif canonical_per_leg is not None:
+            return "resolved mission canonical cruise_speed_per_leg mismatch"
         if (
             canonical.get("heading_mode") != mission.heading_mode
             or not isinstance(canonical.get("loop"), bool)
@@ -1685,6 +1712,11 @@ class ObsNode(Node):
             waypoints,
             "cpu",
             cruise_speed=float(mission.cruise_speed),
+            cruise_speed_per_leg=(
+                [float(value) for value in mission.cruise_speed_per_leg]
+                if mission.cruise_speed_per_leg
+                else None
+            ),
             lookahead_dist=float(mission.lookahead_dist),
             heading_mode=str(mission.heading_mode),
             reach_threshold=float(mission.reach_threshold),
