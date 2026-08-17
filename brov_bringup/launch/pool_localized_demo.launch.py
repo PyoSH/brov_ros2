@@ -209,9 +209,14 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "case_a_segment_length_m",
-                default_value="0.20",
+                default_value="2.0",
                 description=(
-                    "Horizontal P1<->P2 Case-A loop length in metres."
+                    "Horizontal P1<->P2 Case-A loop length in metres. Matches "
+                    "the 2.0 m / 0.5 m/s Gazebo Case-A curriculum "
+                    "deploy_v3/v4/v5 were trained on -- "
+                    "mission_manager_sim2swim_a.yaml's own "
+                    "max_segment_length_m=2.0 ceiling leaves no margin above "
+                    "this default."
                 ),
             ),
             DeclareLaunchArgument(

@@ -100,6 +100,8 @@ def test_case_c_uses_bounded_deterministic_random_v2_profile() -> None:
     assert profile["loop"] is True
     assert profile["min_waypoints"] == 4
     assert profile["max_waypoints"] == 4
+    assert profile["cruise_speed"] == pytest.approx(0.25)
+    assert profile["max_cruise_speed"] == pytest.approx(0.30)
     assert profile["random_attitude_reference_frame"] == "pool_zup_flu"
     assert (
         profile["random_attitude_generator_version"]
@@ -198,7 +200,7 @@ def test_launch_has_safe_fixed_pool_defaults(monkeypatch) -> None:
     assert defaults["arm"] == "false"
     assert defaults["demo_orchestrator"] == "true"
     assert defaults["case_a_target_pool_z_m"] == "0.70"
-    assert defaults["case_a_segment_length_m"] == "0.20"
+    assert defaults["case_a_segment_length_m"] == "2.0"
     assert defaults["camera"] == "true"
     assert defaults["aruco"] == "true"
     assert defaults["require_pool_localization"] == "true"

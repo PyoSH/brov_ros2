@@ -253,8 +253,14 @@ def generate_launch_description() -> LaunchDescription:
             ),
             DeclareLaunchArgument(
                 "case_a_segment_length_m",
-                default_value="0.20",
-                description="Horizontal Case-A loop length in metres.",
+                default_value="2.0",
+                description=(
+                    "Horizontal Case-A loop length in metres. Matches the "
+                    "2.0 m / 0.5 m/s Gazebo Case-A curriculum deploy_v3/v4/v5 "
+                    "were trained on -- mission_manager_sim2swim_a.yaml caps "
+                    "this at max_segment_length_m=2.0, so this default sits "
+                    "at that ceiling with no margin."
+                ),
             ),
             DeclareLaunchArgument(
                 "policy_path",

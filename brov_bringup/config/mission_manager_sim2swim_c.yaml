@@ -29,10 +29,15 @@ brov_mission_manager:
     localization_max_age_s: 1.0
     odometry_max_age_s: 0.5
 
-    cruise_speed: 0.05
+    # cruise_speed raised from the original 0.05 m/s conservative-first-test
+    # value to 0.25 m/s. max_cruise_speed raised to 0.30 to keep headroom
+    # above it -- exactly at safety_sim2swim_c.yaml's own independent
+    # max_resolved_cruise_speed=0.30 ceiling, so this does not widen the
+    # safety layer's cap, only lets the mission manager itself reach it.
+    cruise_speed: 0.25
     lookahead_dist: 0.15
     reach_threshold: 0.08
-    max_cruise_speed: 0.10
+    max_cruise_speed: 0.30
     max_lookahead_dist: 0.30
     max_reach_threshold: 0.15
     heading_mode: random_at_waypoint
