@@ -19,6 +19,7 @@ brov_policy_node:
     vehicle_config: ""
     obs_rate_hz: 25.0
     vis_rate_hz: 2.0
-    action_abs_limit: [0.3, 0.3, 0.3, 0.2, 0.15, 0.2]
-    pwm_abs_limit: 0.35
-    pwm_slew_rate_per_s: 0.4
+    # action_abs_limit: [0.3, 0.3, 0.3, 0.25, 0.25, 0.25]   # pitch 0.15 -> 0.25
+    action_abs_limit: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # pitch 0.15 -> 0.25
+    pwm_abs_limit: 1.0
+    pwm_slew_rate_per_s: 0.0

@@ -18,16 +18,16 @@ brov_mission_manager:
     pool_safe_max_xyz: [3.65, 1.40, 0.90]
     max_first_point_distance_m: 0.30
     min_segment_length_m: 0.05
-    max_segment_length_m: 2.00
+    max_segment_length_m: 2.0
     min_waypoints: 3
     max_waypoints: 3
 
     localization_max_age_s: 1.0
     odometry_max_age_s: 0.5
 
-    cruise_speed: 0.50
-    lookahead_dist: 0.40
-    reach_threshold: 0.15
+    cruise_speed: 0.25
+    lookahead_dist: 0.60
+    reach_threshold: 0.20
     max_cruise_speed: 0.60
     max_lookahead_dist: 1.00
     max_reach_threshold: 0.50
