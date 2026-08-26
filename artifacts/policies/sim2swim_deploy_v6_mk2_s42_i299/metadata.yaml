@@ -1,0 +1,48 @@
+schema: brov_policy_artifact_v2
+artifact_id: sim2swim_deploy_v6_mk2_s42_i299
+artifact_version: 2
+compatibility:
+  required_executable: policy_node_mk2
+  legacy_node_compatible: false
+model:
+  file: policy_raw_flu_mk2.pt
+  format: torchscript
+  sha256: 0f8265eaf9ef7bde23da2d2bdfb5bc60c34d287473508040665f9e78a9fd09bd
+  checkpoint_sha256: 3ecadce71b0bff417f6bc56dd263670d1e6d9b50149c794b61ede34f731296a4
+  checkpoint_iteration: 299
+training:
+  profile: deploy_v6
+  command_profile: deploy_v6
+  seed: 42
+  manifest_sha256: cdedc002f36d3c2f578606e185a733596a0683f83b3c48614945012d3d61633e
+input:
+  shape: [1, 16]
+  observation_schema: brov_velocity_observation_v2
+  fields:
+    - q_error_wxyz
+    - velocity_error_body_zup
+    - angular_velocity_body_zup
+    - velocity_error_integral
+    - quaternion_vector_error_integral
+  quaternion: wxyz_scalar_nonnegative
+  integral_limits: [-5.0, 5.0]
+output:
+  shape: [1, 6]
+  action_order: [surge, sway, heave, roll, pitch, yaw]
+  actor_frame: body_flu_zup
+  actor_raw_range: unbounded
+  runtime_clip: [-1.0, 1.0]
+adapter:
+  contract: explicit_flu_zup_to_sname_frd_v1
+  diagonal: [1.0, -1.0, -1.0, 1.0, -1.0, -1.0]
+  source_frame: body_flu_zup
+  target_frame: body_frd_sname
+  applied_by: policy_node_mk2
+wrench_scale: [85.0, 85.0, 120.0, 26.0, 14.0, 22.0]
+vehicle_model_sha256: 8bb397f4a8a0d50c11bfaf1f88143b4375b84dbd77f41fbe7c512ced1b15be12
+# deploy_v6-specific: this checkpoint was TRAINED assuming a pitch
+# action_abs_limit of 0.25 (not the currently-deployed 0.15). Do not run it
+# with rl_controller_mk2_real_v1.yaml unmodified -- see README.md.
+training_envelope:
+  action_abs_limit: [0.3, 0.3, 0.3, 0.2, 0.25, 0.2]
+  action_order: [surge, sway, heave, roll, pitch, yaw]

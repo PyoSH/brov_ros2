@@ -28,7 +28,7 @@ MK2_OBSERVATION_CONTRACT = "brov_velocity_observation_v2"
 # and reward shaping only -- neither affects this runtime contract.  Extend
 # this tuple (never the single deploy_v2 literal) when a new profile is added
 # in step_2_BROV/envs/vel_env_cfg.py with the same observation/action pair.
-MK2_ACCEPTED_PROFILES = ("deploy_v2", "deploy_v3", "deploy_v4", "deploy_v5")
+MK2_ACCEPTED_PROFILES = ("deploy_v2", "deploy_v3", "deploy_v4", "deploy_v5", "deploy_v6")
 ACTION_ORDER = ("surge", "sway", "heave", "roll", "pitch", "yaw")
 WRENCH_SCALE = (85.0, 85.0, 120.0, 26.0, 14.0, 22.0)
 

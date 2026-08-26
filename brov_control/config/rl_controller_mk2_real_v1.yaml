@@ -1,25 +1,35 @@
 brov_policy_node:
   ros__parameters:
-    # Conservative first-water-test envelope for MK2 policies
-    # (deploy_v4/deploy_v5) on the real vehicle. Values reused from the
-    # earlier sim2swim case-c real-water envelope
-    # (rl_controller_sim2swim_c.yaml) rather than invented fresh -- that
-    # config's own comment is the reason: "Do not enlarge these values
-    # until staged, restrained single-axis tests establish hull/tether
-    # clearance and acceptable transients."
+    # Conservative first-water-test envelope for MK2 policies on the real
+    # vehicle. Values originally reused from the earlier sim2swim case-c
+    # real-water envelope (rl_controller_sim2swim_c.yaml) -- that config's
+    # own comment is the reason: "Do not enlarge these values until staged,
+    # restrained single-axis tests establish hull/tether clearance and
+    # acceptable transients."
     #
-    # Gazebo diagnostics in this investigation found the remaining raw-actor
-    # saturation concentrated almost entirely in pitch/yaw (surge/sway/
-    # heave/roll near zero overflow) -- but that is a Gazebo-only finding
-    # and must not be assumed to hold on the real vehicle. All six axes stay
-    # conservative here; do not narrow the limiting to pitch/yaw alone
-    # without real-water evidence.
+    # pitch raised 0.15 -> 0.25 (2026-08-18, deploy_v5 real-water failure
+    # investigation): a real-bag diagnosis found this exact envelope's
+    # pitch limit (0.15 * f_max_pitch(14.0 N*m) = 2.10 N*m) was below the
+    # maximum CoB-randomization trim moment the policy was trained against
+    # (dr_cob_radius=0.015 -> 2.16 N*m) -- pitch authority was insufficient
+    # even for the training-distribution disturbance, independent of any
+    # real-hardware effect (ballast on vs off reproduced the identical
+    # failure). deploy_v6 was retrained assuming this raised 0.25 pitch
+    # limit is what it will actually run under -- do not run deploy_v6 (or
+    # later) with pitch reverted to 0.15; do not run deploy_v2-v5 with
+    # pitch at 0.25, since they were never trained under any envelope
+    # clamp at all and this value only matters relative to what a
+    # checkpoint was actually trained for. Other five axes unchanged --
+    # Gazebo diagnostics found the original saturation concentrated almost
+    # entirely in pitch (this pitch-specific real-bag finding narrows that
+    # further to pitch's integral specifically), but that is not evidence
+    # the other axes have margin to spare; do not narrow them without
+    # separate real-water evidence.
     policy_path: ""
     policy_metadata_path: ""
     vehicle_config: ""
     obs_rate_hz: 25.0
     vis_rate_hz: 2.0
-    # action_abs_limit: [0.3, 0.3, 0.3, 0.25, 0.25, 0.25]   # pitch 0.15 -> 0.25
-    action_abs_limit: [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # pitch 0.15 -> 0.25
-    pwm_abs_limit: 1.0
-    pwm_slew_rate_per_s: 0.0
+    action_abs_limit: [0.3, 0.3, 0.3, 0.2, 0.25, 0.2]
+    pwm_abs_limit: 0.35
+    pwm_slew_rate_per_s: 0.4
