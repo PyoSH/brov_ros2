@@ -21,8 +21,8 @@ setup(
             glob("config/*.yaml") + ["brov_base/vendor/brov2_heavy.yaml"],
         ),
     ],
-    package_data={"brov_base.vendor": ["brov2_heavy.yaml"]},
-    install_requires=["PyYAML", "pymavlink", "setuptools", "torch"],
+    package_data={"brov_base.vendor": ["brov2_heavy.yaml", "t200_table.npz"]},
+    install_requires=["PyYAML", "numpy", "pymavlink", "setuptools", "torch"],
     # ``extras_require`` remains visible to colcon with modern setuptools;
     # colcon uses the ``test`` extra to select pytest instead of unittest.
     extras_require={"test": ["pytest"]},

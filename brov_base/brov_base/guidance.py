@@ -646,8 +646,15 @@ class LOSGuidance:
 
 
 def _heading_from_direction(direction_w: torch.Tensor, device) -> torch.Tensor:
+    """Attitude (roll=0) whose nose points along ``direction_w``.
+
+    ``quat_apply(q, [1,0,0]) == direction_w`` forces ``pitch = -asin(dz)``:
+    with roll=0 the nose's world Z component is ``-sin(pitch)``. Until
+    2026-08-26 this was ``+asin(dz)``, so every path leg with a vertical
+    component commanded the mirrored pitch.
+    """
     d = direction_w / direction_w.norm(dim=-1, keepdim=True).clamp_min(1e-6)
     yaw = torch.atan2(d[:, 1], d[:, 0])
-    pitch = torch.asin(d[:, 2].clamp(-1.0, 1.0))
+    pitch = -torch.asin(d[:, 2].clamp(-1.0, 1.0))
     roll = torch.zeros_like(yaw)
     return mu.quat_from_euler_xyz(roll, pitch, yaw)

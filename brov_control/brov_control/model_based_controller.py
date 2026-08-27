@@ -156,7 +156,12 @@ class ModelBasedController:
         wrench_sname = wrench_zup * self._wrench_transform
         desired_force = self.allocation_pinv @ wrench_sname
         # Keep diagnostics and commands inside the same realizable T200 range.
-        desired_force = desired_force.clamp(-51.5, 64.1)
+        # The bounds used to be hardcoded (-51.5, 64.1), which are the 20 V
+        # figures from Blue Robotics' performance data; a 4S pack under load
+        # delivers about -34.5/+44.4 N at 14 V. They now come from the measured
+        # table at the thruster model's configured supply voltage, so this
+        # controller and the RL path clamp against the same physical envelope.
+        desired_force = self.thruster.clamp_thrust(desired_force)
         pwm = self.thruster.inverse_thrust(
             desired_force.unsqueeze(0)
         ).squeeze(0)
