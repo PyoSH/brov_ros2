@@ -12,7 +12,6 @@ log/
 build_mk2/
 install_mk2/
 log_mk2/
-runtime/calibration/
 runtime/bags/
 runtime/logs/
 runtime/experiments/
