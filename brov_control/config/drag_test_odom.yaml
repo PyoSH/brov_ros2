@@ -1,4 +1,7 @@
-# 실기 surge 항력 측정 — 수조 3~4m × 폭 2m × 수심 1.15m 기준
+# 실기 surge 항력 측정 — 비전 미사용(odom-상대) 모드
+# 수조 3~4m × 폭 2m × 수심 1.15m 기준.
+# ros2 launch brov_bringup drag_test.launch.py use_pool_alignment:=false \
+#     drag_test_config:=<이 파일의 절대경로>
 brov_drag_test:
   ros__parameters:
     # ── 시험 설계 ──
@@ -7,7 +10,15 @@ brov_drag_test:
     # 최고 0.60은 PWM 비포화 한계(15.4V에서 0.87)에 한참 못 미친다.
     levels: [0.10, 0.20, 0.32, 0.45, 0.60]
     repeat_first_level: true        # 최저 수준을 끝에 한 번 더 — 재순환 편향 검사
-    voltage: 15.4                   # 시험 직전 실측값으로 바꿀 것 (T200은 전압 의존)
+    # 단발 운용. prepare→start 한 번에 수준 하나만 재고 스스로 정지·disarm 한 뒤
+    # IDLE로 돌아온다. 노드는 계속 살아 있다. 운용자가 기체를 여유 있는 자리로
+    # 옮겨 정지시키고 prepare→start 하면 다음 수준이 돈다. 수준을 다 마치면
+    # 그때 한 번 저장·보고하고 끝난다.
+    #   - 노드가 선회하지 않는다(왕복 끔). 뱃머리는 운용자가 맞춘다.
+    #   - 출발점은 항상 '방금 prepare한 자리'라 매 회차 여유 공간이 같다.
+    #   - 도중에 stop을 부르면 그 시점까지의 결과로 세션이 마감된다.
+    single_level_per_start: true
+    voltage: 14.0                   # 시험 직전 실측값으로 바꿀 것 (T200은 전압 의존)
     buoyancy_n: 1.96                # 순중량 200g 음성. 없으면 수준마다 초반에 가라앉는다
     rate_hz: 25.0                   # obs_node의 PWM 워치독이 0.25s — 4Hz 밑으로 가면 fault
 
@@ -29,28 +40,50 @@ brov_drag_test:
     # RUN 시작 1초 전부터 기록한다(음수 t). 추력 인가 직전의 정지 상태가
     # 과도구간 적합의 초기조건을 고정해준다.
     pre_run_s: 1.0
+    # 이 배수만큼 긴 창에서도 정상이어야 끝낸다. 짧은 창 하나만 보면
+    # 가속 중 살짝 내려갔다 다시 오르는 구간을 정상상태로 오인한다.
     settle_confirm_factor: 2.0
     min_run_s: 2.0
     run_timeout_s: 8.0
 
-    # ── pool 프레임 기하 ──
-    # pool 원점은 바닥 모서리, +X는 마커 벽 방향, +Y 좌현, +Z 위.
-    # 마커는 x=3.95에 있고 demo_orchestrator의 안전상자는 [0.35..3.65] x [0.30..1.40]다.
-    axis_heading_rad: 0.0           # 주행축 = pool +X
-    run_x_min: 0.50
-    run_x_max: 2.60                 # 1.8m 주행 + 타행 0.62m + 여유. 벽까지 남겨둘 것
-    run_start_margin_m: 0.15
-    lane_y: 0.85                    # 폭 2m의 중앙 차선
+    # ── 기준 프레임 기하 (odom-상대) ──
+    # 비전을 쓰지 않는다. prepare 시점 포즈가 원점이고 +X는 그때의 뱃머리
+    # 방향이다. 따라서 아래 값은 전부 '출발점 기준 상대량'이다 — 절대 벽
+    # 위치는 알 수 없으므로 기체를 벽 가까이 놓고 눈으로 여유를 확보할 것.
+    use_pool_alignment: false
+    axis_heading_rad: 0.0           # 주행축 = 출발 시 뱃머리
+    # 첫 수준은 run_x_min + margin 에서 출발한다. 둘을 같은 크기로 두면
+    # 출발점이 정확히 0(=prepare 자리)이 되고, margin 이 그대로 '뒤쪽 여유'가
+    # 된다. 0.15로 두었더니 start_hold 30초 동안 밀려 하한을 밟았다 —
+    # 0.35는 밀림 여유이자 왕복 시 뒤쪽 타행 여유다.
+    #   전진: 0.00 → 주행 1.80 → 타행 0.62 = 2.42  ≤ run_x_max
+    #   후진: 2.25 → 주행 1.80 → 타행 0.62 = -0.17 ≥ run_x_min
+    run_x_min: -0.35
+    run_x_max: 2.60
+    run_start_margin_m: 0.35
+    lane_y: 0.0                     # 차선 = 출발 시 진행선
     max_cross_track_m: 0.35
-    target_z: 0.575                 # 수심 1.15m의 정중앙 — 상하 여유를 동시에 최대화
-    max_z_error_m: 0.30             # 한계에서도 바닥 15cm / 수면 14cm 남는다
-    z_min: 0.20
-    z_max: 0.90
+    # 바닥에서 시작한다. start 직후 yaw를 잡은 채 이만큼 상승해 호버링하고,
+    # 그 자리에서 기준 프레임을 다시 잡은 뒤 주행을 시작한다. 상승 구간에는
+    # z_min/z_max 대신 상승 회랑(-max_z_error ~ 목표+max_z_error)이 걸린다.
+    # 부유 상태로 시작한다면 0.0으로 두면 종전과 같다.
+    initial_ascent_m: 0.5
+    ascend_tol_m: 0.08
+    ascend_hold_s: 3.0
+    ascend_timeout_s: 40.0
+    target_z: 0.0                   # 재설정 후 호버 깊이를 유지한다
+    max_z_error_m: 0.30
+    # 상승 완료 후 재설정된 호버 깊이 기준. 수심 1.15m에서 바닥 0.5m 위에
+    # 호버하므로 아래로 0.35(바닥까지 0.15) 위로 0.35(수면까지 0.30) 남는다.
+    z_min: -0.35
+    z_max: 0.35
     max_tilt_deg: 30.0
 
     # ── 단계 시간 ──
     start_hold_s: 30.0              # 이 구간에 테더를 놓는다. 깊이·방위가 잡히는지 볼 것
-    inter_level_wait_s: 60.0        # 재순환 안정화 — 이 수조 최대의 계통오차
+    # 단발 운용에서는 회차 사이 이동·재정렬 시간이 이 역할을 대신한다.
+    # 다만 재순환이 가라앉을 만큼은 기다릴 것 — 최소 60초.
+    inter_level_wait_s: 60.0
     coast_s: 3.0                    # 타행 기록: 추력 테이블과 무관한 Xuu 교차검증
     approach_timeout_s: 60.0
     settle_yaw_timeout_s: 20.0
@@ -78,7 +111,7 @@ brov_drag_test:
     # ── 기타 ──
     localization_max_age_s: 1.0
     odometry_max_age_s: 0.5
-    localization_min_samples: 20    # localization_node의 안전 하한 — 낮출 수 없다
+    localization_min_samples: 20    # 이 모드에서는 쓰이지 않는다 (정렬 서비스 미호출)
     # 틸트 확인이 기존 표본을 전부 버리므로 prepare는 재수집을 기다린다.
     # 마커 포즈가 6Hz 안팎이라 20표본에 3~4초. 기체가 흔들리면 더 걸린다.
     alignment_sample_timeout_s: 30.0

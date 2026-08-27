@@ -52,6 +52,7 @@ import math
 import os
 import threading
 import time
+from collections import deque
 
 import rclpy
 import torch
@@ -73,7 +74,11 @@ from brov_base.diag_terminal_velocity import (
     reward_optimal_tracking,
 )
 from brov_base.vendor.params import load_brov2_yaml, thruster_pos_dir_ned
-from brov_interfaces.msg import AlignedOdometry, LocalizationStatus
+from brov_interfaces.msg import (
+    AlignedOdometry,
+    LocalizationStatus,
+    OdometrySession,
+)
 from brov_interfaces.srv import InitializePool
 
 from .drag_test import (
@@ -84,8 +89,10 @@ from .drag_test import (
     coast_fit,
     lsq_slope,
     recirculation_check,
+    transient_fit,
     wrap_pi,
 )
+from .dvl_reader import DvlReader
 from .model_based_controller import ModelBasedController
 
 _PAPER_VD = 0.5
@@ -141,11 +148,34 @@ class DragTestNode(Node):
 
         # ── 정상상태 판정 (몬테카를로로 확정한 값) ──
         self.declare_parameter("settle_window_s", 1.2)
-        self.declare_parameter("settle_slope", 0.03)
+        self.declare_parameter("settle_slope", 0.015)
         self.declare_parameter("settle_sd", 0.05)
+        # 정상상태를 감지하면 RUN을 즉시 끝낸다. 정지 상태(u≈0)의 창도
+        # 기울기·표준편차가 0이라 "정상상태"를 통과하므로, 가속 구간을
+        # 지나기 전에는 판정하지 않는다. run_timeout_s는 이제 상한일 뿐이다.
+        # RUN 시작 이전 이 시간만큼도 기록에 남긴다. 추력 인가 직전의
+        # 정지 상태가 과도구간 적합의 초기조건을 고정해준다.
+        # A50 DVL 직결. EKF를 대체하지 않고 같은 시각의 두 속도를 나란히
+        # 기록해 사후 교차검증만 한다. 논문이 쓰는 경로가 이쪽이다.
+        self.declare_parameter("dvl_enabled", True)
+        self.declare_parameter("dvl_host", "192.168.2.95")
+        self.declare_parameter("dvl_port", 16171)
+        self.declare_parameter("dvl_max_age_s", 0.5)
+        self.declare_parameter("pre_run_s", 1.0)
+        # 짧은 창은 가속 중의 일시적 평탄부를 정상상태로 오인한다. 실측에서
+        # level 0.20이 t=2.09에 du/dt 0.0142(문턱 0.015)로 통과했지만 그 뒤로도
+        # 계속 올랐다. 이 배수만큼 긴 창에서도 정상이어야 끝낸다.
+        self.declare_parameter("settle_confirm_factor", 2.0)
+        self.declare_parameter("min_run_s", 2.0)
         self.declare_parameter("run_timeout_s", 8.0)
 
         # ── pool 프레임 기하 ──
+        # 비전(ArUco pool 정렬)을 쓰지 않는 모드. prepare 시점의 포즈를
+        # 원점으로 잡고 x/y/yaw를 그 기준 상대값으로 낸다. 잃는 것은 절대
+        # 벽 위치뿐이고, run_x_*/lane_y/target_z가 모두 상대량이 된다.
+        self.declare_parameter("use_pool_alignment", True)
+        self.declare_parameter("ref_max_linear_speed_mps", 0.03)
+        self.declare_parameter("ref_max_angular_speed_rad_s", 0.05)
         self.declare_parameter("axis_heading_rad", 0.0)
         self.declare_parameter("run_x_min", 0.50)
         self.declare_parameter("run_x_max", 2.60)
@@ -159,6 +189,11 @@ class DragTestNode(Node):
         self.declare_parameter("max_tilt_deg", 30.0)
 
         # ── 단계 시간 ──
+        # 바닥에서 시작할 때만 쓴다. 0이면 종전대로 부유 상태 시작을 전제한다.
+        self.declare_parameter("initial_ascent_m", 0.0)
+        self.declare_parameter("ascend_tol_m", 0.08)
+        self.declare_parameter("ascend_hold_s", 3.0)
+        self.declare_parameter("ascend_timeout_s", 40.0)
         self.declare_parameter("start_hold_s", 30.0)
         self.declare_parameter("inter_level_wait_s", 60.0)
         self.declare_parameter("coast_s", 3.0)
@@ -189,7 +224,14 @@ class DragTestNode(Node):
         self.declare_parameter("localization_max_age_s", 1.0)
         self.declare_parameter("odometry_max_age_s", 0.5)
         self.declare_parameter("localization_min_samples", 20)
+        self.declare_parameter("alignment_sample_timeout_s", 30.0)
         self.declare_parameter("service_timeout_s", 15.0)
+        # 단발 운용: prepare→start 한 번에 수준 하나만 재고, 끝나면 스스로
+        # 정지·disarm 하고 IDLE로 돌아간다. 노드는 살아 있다. 운용자가
+        # 기체를 여유 있는 자리로 옮겨 다시 prepare→start 하면 다음
+        # 수준이 돈다. 모든 수준을 마치면 그때 기록을 저장하고 끝낸다.
+        self.declare_parameter("single_level_per_start", False)
+        self.declare_parameter("control_active_timeout_s", 5.0)
         self.declare_parameter("output_path", "")
         self.declare_parameter("send_pwm", True)
 
@@ -219,10 +261,12 @@ class DragTestNode(Node):
             max_z_error_m=float(p("max_z_error_m").value),
             max_tilt_rad=math.radians(float(p("max_tilt_deg").value)),
         )
+        self._single = bool(p("single_level_per_start").value)
         self._plans = build_level_plans(
             self._levels, self._limits,
             float(p("axis_heading_rad").value),
             float(p("run_start_margin_m").value),
+            alternate_direction=not self._single,
         )
 
         # 추력 할당 — 명령↔전달 역산과 τ_max는 검증된 _Allocator를 그대로 쓴다.
@@ -250,7 +294,10 @@ class DragTestNode(Node):
             f"(= level 1.00) | PWM 비포화 한계 {self._linear_max:.1f} N "
             f"(= level {linear_level:.2f})"
         )
-        self.get_logger().info(f"수준 {self._levels} (순서대로 왕복)")
+        self.get_logger().info(
+            f"수준 {self._levels} — "
+            + ("단발 운용: 수준마다 prepare→start, 끝나면 IDLE로 복귀"
+               if self._single else "순서대로 왕복"))
         if hot:
             self.get_logger().error(
                 f"level {hot}은 PWM 포화 구간이다 — 수평 4기가 한계에 붙어 yaw "
@@ -280,6 +327,32 @@ class DragTestNode(Node):
 
         self._aligned: AlignedOdometry | None = None
         self._aligned_rx = 0.0
+        self._use_pool = bool(p("use_pool_alignment").value)
+        self._ref_max_lin = float(p("ref_max_linear_speed_mps").value)
+        self._ref_max_ang = float(p("ref_max_angular_speed_rad_s").value)
+        # 종료 처리 중임을 알린다. _tick은 상태기계를 멈추되 중립 PWM은
+        # 계속 낸다 — obs_node의 PWM 워치독이 0.25s라, stop_control 왕복
+        # 동안 발행이 끊기면 fault가 걸리고 그 래치는 reset_integrator로만
+        # 풀린다("arming blocked by estop/fault/active state").
+        self._ending_run = False
+        # RUN 직전 구간을 담아두는 회전 버퍼. RUN이 시작되면 음수 t로 풀어
+        # _timeseries 앞에 붙인다 — 추력 인가 직전의 정지 상태가 남는다.
+        self._dvl: DvlReader | None = None
+        if bool(p("dvl_enabled").value):
+            self._dvl = DvlReader(str(p("dvl_host").value),
+                                  int(p("dvl_port").value))
+            self._dvl.start()
+        self._dvl_max_age = float(p("dvl_max_age_s").value)
+        self._preroll: deque = deque()      # (monotonic, record)
+        self._run_t0: float | None = None   # RUN 시작 monotonic
+        self._run_flushed = False           # 이번 RUN의 전기록을 풀었는지
+        self._session_stamp = ""            # 세션별 기록 파일 이름
+        self._z_target_override: float | None = None
+        self._ascend_ok_since: float | None = None
+        self._odom: OdometrySession | None = None
+        self._odom_rx = 0.0
+        # odom-상대 모드의 기준 프레임: (x0, y0, z0, yaw0, session_id)
+        self._ref: tuple[float, float, float, float, str] | None = None
         self._loc: LocalizationStatus | None = None
         self._loc_rx = 0.0
         self._control_active = False
@@ -320,6 +393,9 @@ class DragTestNode(Node):
             LocalizationStatus, "/brov/localization/status",
             self._on_loc, latched, callback_group=self._group)
         self.create_subscription(
+            OdometrySession, "/brov/odometry/local_with_session",
+            self._on_odom, qos_profile_sensor_data, callback_group=self._group)
+        self.create_subscription(
             Bool, "/brov/control_active", self._on_active, 1,
             callback_group=self._group)
 
@@ -347,6 +423,18 @@ class DragTestNode(Node):
                             self._on_stop, callback_group=self._group)
 
         self.create_timer(self._period, self._tick, callback_group=self._group)
+        if self._dvl is not None:
+            # 연결 확인은 비동기다 — 여기서는 상태만 알린다. 값이 없으면
+            # 기록에 None으로 남을 뿐 측정은 그대로 진행된다.
+            connected, error = self._dvl.status
+            if connected:
+                self.get_logger().info(
+                    f"DVL 직결: {self.get_parameter('dvl_host').value}:"
+                    f"{self.get_parameter('dvl_port').value} — body 속도를 "
+                    "EKF와 나란히 기록한다")
+            else:
+                self.get_logger().warn(
+                    f"DVL 미연결({error or '대기 중'}) — 기록은 EKF만 남는다")
         self._publish_status("IDLE", "call /brov/drag_test/prepare while stationary")
 
     # ------------------------------------------------------------ 구독 콜백
@@ -354,6 +442,11 @@ class DragTestNode(Node):
         with self._lock:
             self._aligned = msg
             self._aligned_rx = time.monotonic()
+
+    def _on_odom(self, msg: OdometrySession) -> None:
+        with self._lock:
+            self._odom = msg
+            self._odom_rx = time.monotonic()
 
     def _on_loc(self, msg: LocalizationStatus) -> None:
         with self._lock:
@@ -397,8 +490,79 @@ class DragTestNode(Node):
             return False, f"{key} 응답 없음"
         return bool(response.success), str(response.message)
 
+    def _odom_snapshot(self):
+        """odom-상대 프레임 포즈 + body 속도. prepare 시점 포즈가 원점이다."""
+        with self._lock:
+            odom = self._odom
+            odom_rx = self._odom_rx
+            ref = self._ref
+        if odom is None or time.monotonic() - odom_rx > self._odom_max_age:
+            return None, "local odometry 없음/지연"
+        if ref is None:
+            return None, "기준 포즈 없음 — prepare 먼저"
+        if str(odom.odometry_session_id) != ref[4]:
+            return None, ("odometry session이 바뀌었다 — EKF가 재시작했으므로 "
+                          "prepare부터 다시 할 것")
+
+        pose = odom.odometry.pose.pose
+        twist = odom.odometry.twist.twist
+        roll, pitch, yaw = _quat_to_rpy(
+            pose.orientation.x, pose.orientation.y,
+            pose.orientation.z, pose.orientation.w)
+        x0, y0, z0, yaw0, session = ref
+        dx = float(pose.position.x) - x0
+        dy = float(pose.position.y) - y0
+        cos0, sin0 = math.cos(yaw0), math.sin(yaw0)
+        return {
+            # 기준 프레임: 원점은 prepare 시점 위치, +X는 그때의 뱃머리 방향.
+            "x": cos0 * dx + sin0 * dy,
+            "y": -sin0 * dx + cos0 * dy,
+            "z": float(pose.position.z) - z0,
+            # roll/pitch는 중력 기준이라 절대값 그대로 쓴다.
+            "roll": roll, "pitch": pitch, "yaw": wrap_pi(yaw - yaw0),
+            "u": float(twist.linear.x),
+            "v": float(twist.linear.y),
+            "w": float(twist.linear.z),
+            # body FLU 각속도. 테더 장력·벽 근접이 만드는 교란은 surge보다
+            # 횡/수직 성분과 각속도에 먼저 나타난다.
+            "p": float(twist.angular.x),
+            "q": float(twist.angular.y),
+            "r": float(twist.angular.z),
+            "epoch": 0,
+            "alignment_id": f"odom_relative:{session}",
+        }, ""
+
+    def _capture_reference(self):
+        """prepare 시점의 정지 포즈를 기준 프레임으로 고정한다."""
+        with self._lock:
+            odom = self._odom
+            odom_rx = self._odom_rx
+        if odom is None or time.monotonic() - odom_rx > self._odom_max_age:
+            return False, "local odometry 없음/지연"
+        twist = odom.odometry.twist.twist
+        linear = math.sqrt(twist.linear.x ** 2 + twist.linear.y ** 2
+                           + twist.linear.z ** 2)
+        angular = math.sqrt(twist.angular.x ** 2 + twist.angular.y ** 2
+                            + twist.angular.z ** 2)
+        if linear > self._ref_max_lin or angular > self._ref_max_ang:
+            return False, (f"기체가 정지 상태가 아니다 "
+                           f"(선속도 {linear:.3f} m/s, 각속도 {angular:.3f} rad/s)")
+        pose = odom.odometry.pose.pose
+        _, _, yaw = _quat_to_rpy(
+            pose.orientation.x, pose.orientation.y,
+            pose.orientation.z, pose.orientation.w)
+        with self._lock:
+            self._ref = (float(pose.position.x), float(pose.position.y),
+                         float(pose.position.z), yaw,
+                         str(odom.odometry_session_id))
+        return True, (f"기준 포즈 고정 — 방위 {math.degrees(yaw):+.1f}° "
+                      f"(odom {pose.position.x:+.2f}, {pose.position.y:+.2f}, "
+                      f"{pose.position.z:+.2f})")
+
     def _state_snapshot(self):
         """pool 프레임 포즈 + body 속도. 신선하지 않으면 None."""
+        if not self._use_pool:
+            return self._odom_snapshot()
         with self._lock:
             aligned = self._aligned
             aligned_rx = self._aligned_rx
@@ -426,15 +590,53 @@ class DragTestNode(Node):
             "u": float(twist.linear.x),
             "v": float(twist.linear.y),
             "w": float(twist.linear.z),
+            "p": float(twist.angular.x),
+            "q": float(twist.angular.y),
+            "r": float(twist.angular.z),
             "epoch": int(aligned.localization_epoch),
             "alignment_id": str(aligned.alignment_id),
         }, ""
 
     # ------------------------------------------------------------ 서비스
+    def _wait_for_alignment_samples(self, required: int):
+        """정렬 표본이 다시 찰 때까지 기다린다.
+
+        `confirm_camera_tilt_neutral`은 확인 시점에 `_clear_measurements()`로
+        기존 표본을 전부 버린다 — 알 수 없는 틸트에서 모은 표본을 남기지
+        않으려는 의도다. 그래서 틸트 확인 직후에 `initialize_pool`을 부르면
+        버퍼가 비어 있어 `waiting for samples: 0/N`으로 반드시 실패하고,
+        `_last_odom`까지 None이라 그 앞의 신선도 검사에서
+        `fresh local odometry is unavailable`이 나기도 한다. 기다린다.
+        """
+        timeout = float(self.get_parameter("alignment_sample_timeout_s").value)
+        deadline = time.monotonic() + timeout
+        count = 0
+        reported = -1
+        while time.monotonic() < deadline:
+            with self._lock:
+                loc = self._loc
+            count = int(loc.sample_count) if loc is not None else 0
+            if count >= required:
+                return True, f"정렬 표본 {count}/{required}"
+            if count != reported:
+                reported = count
+                self._publish_status("ALIGNING", f"정렬 표본 {count}/{required}")
+            time.sleep(0.1)
+        return False, (
+            f"정렬 표본 부족 {count}/{required} ({timeout:.0f}s) — 기체를 "
+            "정지시키고 마커가 보이는지 확인할 것")
+
     def _on_prepare(self, _request, response):
         if self._state not in ("IDLE", "ALIGNED", "STOPPED"):
             response.success = False
             response.message = f"prepare는 {self._state}에서 호출할 수 없다"
+            return response
+        if not self._use_pool:
+            # 비전 없음 — 지금 포즈를 기준으로 잡고 끝이다.
+            self._publish_status("ALIGNING", "기준 포즈 고정 (비전 미사용)")
+            ok, msg = self._capture_reference()
+            self._publish_status("ALIGNED" if ok else "IDLE", msg)
+            response.success, response.message = ok, msg
             return response
         self._publish_status("ALIGNING", "confirm tilt + initialize pool")
         ok, msg = self._call("tilt")
@@ -442,9 +644,14 @@ class DragTestNode(Node):
             self._publish_status("IDLE", f"카메라 틸트 확인 실패: {msg}")
             response.success, response.message = False, msg
             return response
+        required = int(self.get_parameter("localization_min_samples").value)
+        ok, msg = self._wait_for_alignment_samples(required)
+        if not ok:
+            self._publish_status("IDLE", msg)
+            response.success, response.message = False, msg
+            return response
         request = InitializePool.Request()
-        request.min_samples = int(
-            self.get_parameter("localization_min_samples").value)
+        request.min_samples = required
         ok, msg = self._call("init", request)
         if not ok:
             self._publish_status("IDLE", f"정렬 초기화 실패: {msg}")
@@ -453,6 +660,23 @@ class DragTestNode(Node):
         self._publish_status("ALIGNED", msg)
         response.success, response.message = True, msg
         return response
+
+    def _wait_for_control_active(self):
+        """obs_node가 /brov/control_active=true를 낼 때까지 기다린다.
+
+        _tick은 state가 ARMED/RUNNING일 때만 동작하므로, ARMED로 넘어가기 전인
+        이 구간에서 기다리는 것은 안전하다. 콜백그룹이 Reentrant라 대기 중에도
+        구독 콜백이 처리된다.
+        """
+        timeout = float(self.get_parameter("control_active_timeout_s").value)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            with self._lock:
+                if self._control_active:
+                    return True, "base control 활성 확인"
+            time.sleep(0.02)
+        return False, (f"base control 활성 확인 실패 ({timeout:.1f}s) — "
+                       "obs_node가 /brov/control_active를 내지 않는다")
 
     def _on_start(self, _request, response):
         if self._state != "ALIGNED":
@@ -475,19 +699,61 @@ class DragTestNode(Node):
             self._publish_status("ALIGNED", f"start 실패: {msg}")
             response.success, response.message = False, msg
             return response
+        # start_control이 성공해도 /brov/control_active는 곧바로 오지 않는다.
+        # obs_node는 주기 루프에서 `_control_active and _active_obs_published`를
+        # 발행하므로 최소 한 틱(40ms) 이상 늦는다. 그 사이에 ARMED로 넘어가면
+        # 첫 _tick이 아직 False인 값을 보고 "base control이 비활성화됨"으로
+        # 즉시 중단한다 — 실제로 그렇게 죽었다. 활성 확인까지 기다린다.
+        ok, msg = self._wait_for_control_active()
+        if not ok:
+            self._call("stop", timeout=8.0)
+            self._call("disarm", timeout=8.0)
+            self._publish_status("ALIGNED", msg)
+            response.success, response.message = False, msg
+            return response
 
         with self._lock:
-            self._results.clear()
-            self._timeseries.clear()
-            self._plan_idx = 0
-            self._saved = False
+            if not self._single:
+                # 연속 운용은 start 한 번이 곧 한 세션이다.
+                self._plan_idx = 0
+            if not self._single or self._plan_idx == 0:
+                self._session_stamp = time.strftime("%Y%m%d_%H%M%S",
+                                                    time.localtime())
+                # 단발 운용에서는 회차 사이에 누적 결과를 지우지 않는다.
+                # 첫 회차에서만 새 세션으로 초기화한다.
+                self._results.clear()
+                self._timeseries.clear()
+                self._saved = False
             self._abort_reason = None
             self._reset_pids()
-            self._enter_phase(Phase.APPROACH)
-        self._publish_status(
-            "ARMED",
-            f"start_hold {self.get_parameter('start_hold_s').value:.0f}s "
-            f"— 지금 테더를 놓고 깊이와 방위가 잡히는지 볼 것")
+            self._ascend_ok_since = None
+            ascent = float(self.get_parameter("initial_ascent_m").value)
+            if ascent > 0.0 and self._use_pool:
+                # pool 모드의 target_z는 수조 바닥 기준 절대값이라 '상대 상승'이
+                # 성립하지 않는다. 절대 좌표를 알면 target_z만 바꾸면 된다.
+                msg = ("initial_ascent_m은 use_pool_alignment=false에서만 "
+                       "쓴다 — pool 모드는 target_z를 직접 지정할 것")
+                self._publish_status("ALIGNED", msg)
+                response.success, response.message = False, msg
+                return response
+            if ascent > 0.0:
+                # 기준 포즈가 바닥에서 잡혔다. 목표 깊이는 그보다 ascent 만큼
+                # 위이고, 도달하면 그 자리에서 기준 프레임을 다시 잡는다.
+                self._z_target_override = ascent
+                self._enter_phase(Phase.ASCEND)
+            else:
+                self._z_target_override = None
+                self._enter_phase(Phase.APPROACH)
+        if self._phase == Phase.ASCEND:
+            self._publish_status(
+                "ARMED",
+                f"상승 {float(self.get_parameter('initial_ascent_m').value):.2f} m "
+                f"— yaw 고정, 도달 후 호버링하며 기준 재설정")
+        else:
+            self._publish_status(
+                "ARMED",
+                f"start_hold {self.get_parameter('start_hold_s').value:.0f}s "
+                f"— 지금 테더를 놓고 깊이와 방위가 잡히는지 볼 것")
         response.success, response.message = True, "시험 시작"
         return response
 
@@ -513,6 +779,8 @@ class DragTestNode(Node):
                 max_sd=float(self.get_parameter("settle_sd").value),
             )
             self._run_x0 = None
+            self._run_t0 = self._phase_t0
+            self._run_flushed = False
             self._yaw_peak = 0.0
         elif phase == Phase.COAST:
             self._coast = []
@@ -522,21 +790,64 @@ class DragTestNode(Node):
             return self._plans[self._plan_idx]
         return None
 
-    def _finish(self, reason: str) -> None:
-        """어떤 경로로 끝나도 중립·정지·기록 저장까지 반드시 수행한다."""
-        self._neutral()
-        if self._state in ("ARMED", "RUNNING"):
+    def _end_single_run(self) -> None:
+        """수준 하나를 끝내고 기체를 안전 상태로 되돌린다 — 세션은 계속된다.
+
+        기록은 저장하지 않는다(세션 끝에 한 번만 저장한다). 기준 프레임을
+        버리므로 다음 회차는 반드시 prepare부터 다시 해야 한다 — 운용자가
+        기체를 옮긴 뒤의 자리가 새 원점이 되어야 하기 때문이다.
+        """
+        self._ending_run = True
+        try:
+            self._neutral()
             self._call("stop", timeout=8.0)
             self._call("disarm", timeout=8.0)
-        self._phase = Phase.DONE
+        finally:
+            self._phase = Phase.DONE
+            self._ending_run = False
+        with self._lock:
+            self._ref = None
+            self._z_target_override = None
+            self._ascend_ok_since = None
+        # 여기서 저장하지 않으면 회차 사이의 Ctrl+C에 그때까지가 통째로
+        # 날아간다 — 운용자가 기체를 옮기는 동안 스택을 재시작할 수 있다.
+        # 세션 파일 하나를 회차마다 덮어써 항상 최신으로 유지한다.
+        self._save_and_report("회차 완료 (세션 진행 중)", checkpoint=True)
+        done, total = self._plan_idx, len(self._plans)
+        nxt = self._plans[self._plan_idx].level
+        self._publish_status(
+            "IDLE",
+            f"{done}/{total} 완료 — 기체를 여유 있는 자리로 옮기고 정지시킨 뒤 "
+            f"prepare → start (다음 level {nxt:.2f})")
+
+    def _finish(self, reason: str) -> None:
+        """어떤 경로로 끝나도 중립·정지·기록 저장까지 반드시 수행한다."""
+        self._ending_run = True
+        try:
+            self._neutral()
+            if self._state in ("ARMED", "RUNNING"):
+                self._call("stop", timeout=8.0)
+                self._call("disarm", timeout=8.0)
+        finally:
+            self._phase = Phase.DONE
+            self._ending_run = False
         if not self._saved:
             self._saved = True
             self._save_and_report(reason)
+        with self._lock:
+            # 다음 세션은 첫 수준부터. 단발 운용에서 중단으로 끝난 경우에도
+            # 이어 달리지 않고 새로 시작하게 한다.
+            self._plan_idx = 0
+            self._ref = None
         self._publish_status("STOPPED", reason)
 
     # ------------------------------------------------------------ 주기 루프
     def _tick(self) -> None:
         if self._phase == Phase.DONE or self._state not in ("ARMED", "RUNNING"):
+            return
+        if self._ending_run:
+            # stop/disarm 왕복 중. 상태기계는 세우고 워치독만 먹인다.
+            self._neutral()
             return
 
         now = time.monotonic()
@@ -559,7 +870,8 @@ class DragTestNode(Node):
             return
 
         violation = self._limits.violation(
-            snap["x"], snap["y"], snap["z"], snap["roll"], snap["pitch"])
+            snap["x"], snap["y"], snap["z"], snap["roll"], snap["pitch"],
+            check_depth=self._phase != Phase.ASCEND)
         elapsed = now - self._phase_t0
 
         # RUN 중의 한계 위반은 그 수준을 끝낼 뿐 시험 전체를 끝내지 않는다 —
@@ -573,8 +885,14 @@ class DragTestNode(Node):
             self._finish("모든 수준 완료")
             return
 
+        # 단계 처리기가 _enter_phase로 단계를 바꾸므로, 기록에는 이 틱이
+        # 실제로 속했던 단계를 남긴다. 안 그러면 RUN의 마지막 표본이 COAST로
+        # 잘못 기록된다 — 사후 적합에서 그 표본이 엉뚱한 구간에 들어간다.
+        tick_phase = self._phase
         surge_n = 0.0
-        if self._phase == Phase.APPROACH:
+        if self._phase == Phase.ASCEND:
+            surge_n = self._ascend(snap, elapsed, now)
+        elif self._phase == Phase.APPROACH:
             surge_n = self._approach(snap, plan, elapsed)
         elif self._phase == Phase.SETTLE_YAW:
             surge_n = self._settle_yaw(snap, plan, elapsed, now)
@@ -588,26 +906,82 @@ class DragTestNode(Node):
             surge_n = self._wait(snap, elapsed)
 
         self._emit(snap, plan, surge_n, dt)
+        self._record(snap, plan, surge_n, now, tick_phase)
 
     # -------- 단계별 --------
+    def _ascend(self, snap, elapsed, now) -> float:
+        """바닥에서 목표 깊이까지 올라가 호버링한다. surge는 내지 않는다.
+
+        도달하면 기준 프레임을 그 자리에서 다시 잡는다. 바닥에서는 A50이
+        bottom lock 최소고도 밑이라 EKF 수평속도가 부실할 수 있는데, 상승 전
+        원점을 그대로 쓰면 그 구간의 드리프트가 주행거리에 그대로 실린다.
+        """
+        target = float(self._z_target_override or 0.0)
+        if elapsed > float(self.get_parameter("ascend_timeout_s").value):
+            self._finish(f"상승 시간 초과 (z={snap['z']:+.2f} 목표 {target:+.2f})")
+            return 0.0
+        # 상승 회랑 — z_min/z_max 대신 이 구간을 감시한다. 바닥 아래로
+        # 가라앉거나 목표를 크게 넘어 수면으로 솟는 것을 막는다.
+        band = float(self.get_parameter("max_z_error_m").value)
+        if not (-band <= snap["z"] <= target + band):
+            self._finish(
+                f"상승 회랑 이탈 z={snap['z']:+.2f} "
+                f"(허용 {-band:+.2f}~{target + band:+.2f})")
+            return 0.0
+        tol = float(self.get_parameter("ascend_tol_m").value)
+        hold = float(self.get_parameter("ascend_hold_s").value)
+        if abs(snap["z"] - target) > tol:
+            self._ascend_ok_since = None
+            return 0.0
+        if self._ascend_ok_since is None:
+            self._ascend_ok_since = now
+            return 0.0
+        if now - self._ascend_ok_since < hold:
+            return 0.0
+
+        ok, msg = self._capture_reference() if not self._use_pool else (True, "")
+        if not ok:
+            # 아직 흔들린다 — 중단하지 않고 다시 안정될 때까지 기다린다.
+            # 계속 실패하면 ascend_timeout_s가 잡는다.
+            self._ascend_ok_since = None
+            return 0.0
+        # 재설정 후에는 지금 깊이가 곧 목표다 — target_z(=0)로 되돌린다.
+        self._z_target_override = None
+        self._reset_pids()
+        self.get_logger().info(
+            f"상승 완료 — {target:+.2f} m 호버링, 기준 프레임 재설정. {msg}")
+        self._publish_status(
+            "ARMED",
+            f"start_hold {self.get_parameter('start_hold_s').value:.0f}s "
+            f"— 지금 테더를 놓고 깊이와 방위가 잡히는지 볼 것")
+        self._enter_phase(Phase.APPROACH)
+        return 0.0
+
     def _approach(self, snap, plan, elapsed) -> float:
         if elapsed > float(self.get_parameter("approach_timeout_s").value):
             self._finish("주행 시점 접근 시간 초과")
             return 0.0
         hold = float(self.get_parameter("start_hold_s").value)
-        # 첫 수준은 운용자가 테더를 놓을 시간을 준다 — 그동안 제자리 유지.
-        if self._plan_idx == 0 and elapsed < hold:
-            return 0.0
         dx = plan.start_x - snap["x"]
+        kp = float(self.get_parameter("approach_surge_kp").value)
+        lim = float(self.get_parameter("approach_surge_limit_n").value)
+        # 주행축 오차를 기체 전방 성분으로 투영한다.
+        surge = max(-lim, min(lim, kp * dx * math.cos(snap["yaw"])))
+
+        # 첫 수준은 운용자가 테더를 놓을 시간을 준다. 그 30초 동안에도 주행
+        # 시점을 붙잡는다 — 예전에는 여기서 0을 냈는데, 깊이/방위/차선만 닫히고
+        # x는 자유라 테더 장력에 0.006 m/s로 밀려 26초 만에 주행축 하한을
+        # 밟았다. 이 구간은 측정이 아니므로 닫아도 open-loop 원칙에 걸리지
+        # 않는다 (RUN만 open-loop여야 한다).
+        if self._plan_idx == 0 and elapsed < hold:
+            return surge
+
         if abs(dx) < 0.10:
             self._publish_status("RUNNING",
                                  f"level {plan.level:.2f} 방위 정렬 대기")
             self._enter_phase(Phase.SETTLE_YAW)
             return 0.0
-        kp = float(self.get_parameter("approach_surge_kp").value)
-        lim = float(self.get_parameter("approach_surge_limit_n").value)
-        # pool +X 오차를 기체 전방 성분으로 투영한다.
-        return max(-lim, min(lim, kp * dx * math.cos(snap["yaw"])))
+        return surge
 
     def _settle_yaw(self, snap, plan, elapsed, now) -> float:
         tol = math.radians(float(self.get_parameter("settle_yaw_tol_deg").value))
@@ -639,12 +1013,6 @@ class DragTestNode(Node):
         # 전달 추력은 명령이 아니라 할당 왕복으로 계산한 값을 쓴다 —
         # sway/yaw가 수평 4기를 나눠 쓰면서 줄어드는 몫까지 반영된다.
         self._detector.add(elapsed, snap["u"], self._delivered_surge)
-        self._timeseries.append({
-            "level": plan.level, "t": elapsed, "u": snap["u"],
-            "x": snap["x"], "y": snap["y"], "z": snap["z"],
-            "yaw_deg": math.degrees(snap["yaw"]),
-            "tau_x_delivered": self._delivered_surge,
-        })
         self._yaw_peak = max(self._yaw_peak,
                              abs(wrap_pi(plan.heading - snap["yaw"])))
 
@@ -652,6 +1020,21 @@ class DragTestNode(Node):
         if violation is not None or timeout:
             self._end_run(plan, violation or "주행 시간 초과", elapsed, snap["x"])
             return 0.0
+
+        # 정상상태에 들면 더 달릴 이유가 없다. 거리를 아끼는 것이자, 꼬리 창이
+        # 뒤늦은 교란(테더 장력·벽 근접·재순환)에 오염되기 전에 끊는 것이다.
+        # 실제로 8초를 다 쓰다가 감속 구간을 정상상태로 잡은 적이 있다.
+        if elapsed >= float(self.get_parameter("min_run_s").value):
+            window = float(self.get_parameter("settle_window_s").value)
+            factor = float(self.get_parameter("settle_confirm_factor").value)
+            out = self._detector.evaluate()
+            if out.get("steady") and out.get("window_s", 0.0) >= window * 0.9:
+                long_window = window * max(1.0, factor)
+                confirm = self._detector.evaluate(long_window)
+                if (confirm.get("steady")
+                        and confirm.get("window_s", 0.0) >= long_window * 0.9):
+                    self._end_run(plan, "정상상태 도달", elapsed, snap["x"])
+                    return 0.0
         return cmd
 
     def _end_run(self, plan, abort_reason, elapsed, x_now: float) -> None:
@@ -692,6 +1075,8 @@ class DragTestNode(Node):
             self._plan_idx += 1
             if self._plan_idx >= len(self._plans):
                 self._finish("모든 수준 완료")
+            elif self._single:
+                self._end_single_run()
             else:
                 self._enter_phase(Phase.TURNAROUND)
         return 0.0
@@ -713,6 +1098,56 @@ class DragTestNode(Node):
         if elapsed >= float(self.get_parameter("inter_level_wait_s").value):
             self._enter_phase(Phase.APPROACH)
         return 0.0
+
+    # -------- 기록 --------
+    def _sample(self, snap, plan, surge_cmd: float, t: float,
+                phase: Phase) -> dict:
+        """한 틱의 상태 전부. 사후 해석이 다시 물을 일이 없게 다 담는다."""
+        return {
+            "level": None if plan is None else plan.level,
+            "phase": phase.value,
+            "t": t,
+            # body FLU 선속도 / 각속도
+            "u": snap["u"], "v": snap["v"], "w": snap["w"],
+            "p": snap["p"], "q": snap["q"], "r": snap["r"],
+            # 자세 (roll/pitch는 중력 기준 절대값, yaw는 기준 프레임 상대)
+            "roll_deg": math.degrees(snap["roll"]),
+            "pitch_deg": math.degrees(snap["pitch"]),
+            "yaw_deg": math.degrees(snap["yaw"]),
+            # 기준 프레임 위치
+            "x": snap["x"], "y": snap["y"], "z": snap["z"],
+            # 명령 surge와 할당 왕복으로 계산한 전달 surge
+            "tau_x_cmd": float(surge_cmd),
+            "tau_x_delivered": self._delivered_surge,
+            **(self._dvl.sample(max_age_s=self._dvl_max_age)
+               if self._dvl is not None else {}),
+        }
+
+    def _record(self, snap, plan, surge_cmd: float, now: float,
+                phase: Phase) -> None:
+        """RUN/COAST는 기록하고, 그 앞 구간은 회전 버퍼에 담아둔다."""
+        pre = float(self.get_parameter("pre_run_s").value)
+        if phase in (Phase.RUN, Phase.COAST) and self._run_t0 is not None:
+            t = now - self._run_t0
+            if phase == Phase.RUN and not self._run_flushed:
+                self._run_flushed = True
+                # RUN 첫 틱 — 직전 pre_run_s를 음수 t로 풀어 앞에 붙인다.
+                for stamp, rec in self._preroll:
+                    age = stamp - self._run_t0
+                    if age < -pre:
+                        continue
+                    rec = dict(rec)
+                    rec["t"] = age
+                    rec["level"] = None if plan is None else plan.level
+                    self._timeseries.append(rec)
+            self._timeseries.append(
+                self._sample(snap, plan, surge_cmd, t, phase))
+            self._preroll.clear()
+            return
+        self._preroll.append(
+            (now, self._sample(snap, plan, surge_cmd, 0.0, phase)))
+        while self._preroll and now - self._preroll[0][0] > pre:
+            self._preroll.popleft()
 
     # -------- wrench 조립과 발행 --------
     def _emit(self, snap, plan, surge_n: float, dt: float) -> None:
@@ -738,7 +1173,9 @@ class DragTestNode(Node):
 
         # heave: pool +Z는 위쪽이므로 (목표 - 실측)이 양수면 위로 밀어야 한다.
         # 순중량은 상시 전방보상 — 없으면 수준마다 적분이 0에서 시작해 가라앉는다.
-        wrench[2] = (self._depth_pid(self._limits.target_z - snap["z"], dt)
+        z_target = (self._limits.target_z if self._z_target_override is None
+                    else self._z_target_override)
+        wrench[2] = (self._depth_pid(z_target - snap["z"], dt)
                      + self._buoyancy_n)
         wrench[3] = self._roll_pid(wrap_pi(0.0 - snap["roll"]), dt)
         wrench[4] = self._pitch_pid(wrap_pi(0.0 - snap["pitch"]), dt)
@@ -757,7 +1194,12 @@ class DragTestNode(Node):
             Float32MultiArray(data=[self._delivered_surge, surge_n]))
 
     # ------------------------------------------------------------ 결과
-    def _save_and_report(self, reason: str) -> None:
+    def _save_and_report(self, reason: str, *, checkpoint: bool = False) -> None:
+        """기록을 남긴다.
+
+        ``checkpoint=True``는 회차 사이 중간 저장이다 — 세션 파일만 갱신하고
+        고정 경로도 건드리지 않고 보고도 하지 않는다.
+        """
         path = str(self.get_parameter("output_path").value)
         if not path:
             data_dir = os.environ.get("BROV_DATA_DIR",
@@ -766,6 +1208,15 @@ class DragTestNode(Node):
         os.makedirs(os.path.dirname(path), exist_ok=True)
 
         fit = fit_drag(self._results)
+        # 과도구간 적합 — 정상상태에 도달하지 못한 수준까지 살려 쓴다.
+        # Xu는 정상상태 적합 값으로 고정한다(저속에서 u와 u|u|가 공선이라
+        # 그러지 않으면 분리되지 않는다 — coast_fit과 같은 이유다).
+        transient = transient_fit(
+            self._timeseries,
+            xu_known=fit["Xu"] if fit.get("ok") else None)
+        # coast_fit이 쓰는 질량. 과도구간 적합이 m_eff를 재긴 하지만 잡음에
+        # 낮게 치우치므로(감쇠편향), 기본값은 모델값을 유지하고 측정값은
+        # 보고에만 남긴다.
         mass_eff = 14.635 + 6.36
         coasts = []
         for r in self._results:
@@ -784,22 +1235,39 @@ class DragTestNode(Node):
             "buoyancy_n": self._buoyancy_n,
             "levels": self._results,
             "fit": fit,
+            "transient_fit": transient,
             "coast_fits": coasts,
             "recirculation": recirc,
             "timeseries": self._timeseries,
         }
-        try:
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2, ensure_ascii=False)
-            self.get_logger().info(
-                f"기록 저장: {path} (수준 {len(self._results)}개, "
-                f"표본 {len(self._timeseries)}개)")
-        except Exception as error:
-            self.get_logger().error(f"기록 저장 실패: {error}")
+        # 세션 파일을 먼저 남긴다. 고정 경로 하나만 쓰면 곧바로 끝난 다음
+        # 세션이 직전의 좋은 결과를 덮어쓴다 — 실제로 수준 5개짜리 결과가
+        # 그렇게 사라졌다. 세션 파일은 무슨 일이 있어도 남는다.
+        stem, ext = os.path.splitext(path)
+        stamp = self._session_stamp or time.strftime("%Y%m%d_%H%M%S",
+                                                     time.localtime())
+        archive = f"{stem}_{stamp}{ext}"
+        targets = (archive,) if checkpoint else (archive, path)
+        for target in targets:
+            if target == path and not self._results:
+                # 빈 세션은 고정 경로를 건드리지 않는다. 사본은 이미 남겼다.
+                self.get_logger().warn(
+                    f"수준 0개 — {path}를 덮어쓰지 않는다 (사본: {archive})")
+                continue
+            try:
+                with open(target, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, indent=2, ensure_ascii=False)
+                self.get_logger().info(
+                    f"기록 저장: {target} (수준 {len(self._results)}개, "
+                    f"표본 {len(self._timeseries)}개)")
+            except Exception as error:
+                self.get_logger().error(f"기록 저장 실패 {target}: {error}")
 
-        self._report(fit, coasts, recirc)
+        if not checkpoint:
+            self._report(fit, coasts, recirc, transient)
 
-    def _report(self, fit: dict, coasts: list[dict], recirc: dict) -> None:
+    def _report(self, fit: dict, coasts: list[dict], recirc: dict,
+                transient: dict | None = None) -> None:
         log = self.get_logger()
         if not fit.get("ok"):
             log.error(f"[적합 실패] {fit.get('reason')}")
@@ -825,6 +1293,19 @@ class DragTestNode(Node):
         for c in coasts:
             log.info(f"  [타행 교차검증] level {c['level']:.2f}: "
                      f"Xuu = {c['Xuu']:.1f} (추력테이블 무관), R^2 {c['r2']:.3f}")
+        if transient and transient.get("ok"):
+            log.info(
+                f"  [과도구간 적합] Xuu = {transient['Xuu']:.1f} "
+                f"(정상상태 불필요, 수준 {transient['n_levels']}개 "
+                f"표본 {transient['n_samples']}개, 잔차 "
+                f"{100 * transient['rms_relative']:.1f}%)")
+            log.info(
+                f"      m_eff = {transient['m_eff_kg']:.1f} kg "
+                f"(모델 가정 20.99 kg) — 잡음에 낮게 치우치므로 자릿수 확인용")
+            if not transient.get("xu_identifiable", False):
+                log.info("      Xu는 이 적합에서 식별되지 않는다(고정값 사용)")
+        elif transient:
+            log.warn(f"  [과도구간 적합] 실패 — {transient.get('reason', '?')}")
         if recirc.get("checked") and recirc.get("biased"):
             log.warn(f"  [경고] 재순환 편향 — level {recirc['worst_level']}의 "
                      f"반복 측정이 {100 * recirc['worst_relative_spread']:.0f}% "

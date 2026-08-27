@@ -26,10 +26,13 @@ import statistics
 from dataclasses import dataclass, field
 from enum import Enum
 
+import numpy as np
+
 
 class Phase(str, Enum):
     """수준 하나를 처리하는 동안의 단계."""
 
+    ASCEND = "ASCEND"            # 바닥에서 이륙 — 목표 깊이까지 상승 후 호버
     APPROACH = "APPROACH"        # 주행 시점으로 이동
     SETTLE_YAW = "SETTLE_YAW"    # 방위 정렬 대기
     RUN = "RUN"                  # open-loop surge, 종단속도 측정
@@ -58,15 +61,23 @@ class Limits:
     max_tilt_rad: float
 
     def violation(self, x: float, y: float, z: float,
-                  roll: float, pitch: float) -> str | None:
-        """한계를 벗어났으면 사유 문자열, 아니면 None."""
+                  roll: float, pitch: float,
+                  *, check_depth: bool = True) -> str | None:
+        """한계를 벗어났으면 사유 문자열, 아니면 None.
+
+        ``check_depth=False``는 깊이 두 항(``z_min``/``z_max`` 절대 한계와
+        목표 깊이 오차)을 함께 끈다. 바닥에서 이륙하는 ASCEND 단계는 정의상
+        두 항 모두를 위반한 상태로 시작하므로 첫 틱에 중단된다. 그 구간의
+        깊이는 노드가 별도 상승 회랑으로 감시한다. 차선과 자세 한계는 끄지
+        않는다.
+        """
         if not (self.run_x_min <= x <= self.run_x_max):
             return f"주행축 한계 x={x:.2f} (허용 {self.run_x_min:.2f}~{self.run_x_max:.2f})"
         if abs(y - self.lane_y) > self.max_cross_track_m:
             return f"차선 이탈 {y - self.lane_y:+.2f} m"
-        if not (self.z_min <= z <= self.z_max):
+        if check_depth and not (self.z_min <= z <= self.z_max):
             return f"깊이 한계 z={z:.2f} (허용 {self.z_min:.2f}~{self.z_max:.2f})"
-        if abs(z - self.target_z) > self.max_z_error_m:
+        if check_depth and abs(z - self.target_z) > self.max_z_error_m:
             return f"깊이 이탈 {z - self.target_z:+.2f} m"
         if max(abs(roll), abs(pitch)) > self.max_tilt_rad:
             return (f"자세 이탈 roll {math.degrees(roll):+.0f}° "
@@ -119,15 +130,22 @@ class SteadyDetector:
     def samples(self) -> int:
         return len(self._series)
 
-    def tail(self) -> list[tuple[float, float, float]]:
+    def tail(self, window_s: float | None = None) -> list[tuple[float, float, float]]:
         if not self._series:
             return []
-        cutoff = self._series[-1][0] - self.window_s
+        span = self.window_s if window_s is None else float(window_s)
+        cutoff = self._series[-1][0] - span
         return [s for s in self._series if s[0] >= cutoff]
 
-    def evaluate(self) -> dict:
-        """정상상태 여부와 그 구간의 평균 속도/전달 추력."""
-        tail = self.tail()
+    def evaluate(self, window_s: float | None = None) -> dict:
+        """정상상태 여부와 그 구간의 평균 속도/전달 추력.
+
+        ``window_s``로 창을 바꿔 볼 수 있다. 짧은 창은 가속 중의 일시적
+        평탄부(살짝 내려갔다 다시 오르는 구간)를 정상상태로 오인한다 —
+        실측에서 level 0.20이 t=2.09에 u=0.243으로 통과했지만 그 뒤로도
+        계속 올랐다. 긴 창으로 한 번 더 확인하는 용도다.
+        """
+        tail = self.tail(window_s)
         if len(tail) < self.min_samples:
             return {"steady": False, "n_tail": len(tail),
                     "reason": f"표본 부족 {len(tail)}/{self.min_samples}"}
@@ -286,11 +304,17 @@ class LevelPlan:
 
 
 def build_level_plans(levels: list[float], limits: Limits,
-                      axis_heading: float, margin_m: float) -> list[LevelPlan]:
+                      axis_heading: float, margin_m: float,
+                      alternate_direction: bool = True) -> list[LevelPlan]:
     """수준마다 번갈아 방향을 바꾸는 왕복 계획을 만든다.
 
     T200은 역추력(-51.5 N)이 정추력(+64.1 N)보다 약해서 전/후진을 섞으면 적합이
     오염된다. 그래서 되돌아올 때도 뱃머리를 돌려 항상 전진한다.
+
+    ``alternate_direction=False``는 왕복을 끄고 모든 수준을 같은 방향·같은
+    출발점으로 만든다. 수준마다 운용자가 기체를 원하는 자리로 옮기고 다시
+    prepare하는 단발 운용(single_level_per_start)에서 쓴다 — 그때 출발점은
+    항상 '방금 prepare한 자리'이고, 선회는 노드가 하지 않는다.
     """
     plans: list[LevelPlan] = []
     forward = True
@@ -303,5 +327,144 @@ def build_level_plans(levels: list[float], limits: Limits,
             start_x=start_x,
             forward=forward,
         ))
-        forward = not forward
+        if alternate_direction:
+            forward = not forward
     return plans
+
+
+def _transient_blocks(samples: list[dict], smooth: int):
+    """수준별로 나눠 평활·미분한다.
+
+    수준마다 t가 -pre_run_s에서 다시 시작하므로, 전부 합쳐 미분하면 수준
+    경계에서 시간이 되감기며 du/dt가 발산한다. 반드시 나눠서 미분한 뒤
+    설계행렬만 쌓아야 한다.
+    """
+    groups: dict[object, list[tuple[float, float, float]]] = {}
+    for entry in samples:
+        if entry.get("t") is None or entry.get("u") is None:
+            continue
+        if entry.get("tau_x_delivered") is None:
+            continue
+        key = entry.get("level")
+        groups.setdefault(key, []).append(
+            (float(entry["t"]), float(entry["u"]),
+             float(entry["tau_x_delivered"]))
+        )
+
+    k = smooth if smooth % 2 else smooth + 1
+    kernel = np.ones(k) / k
+    blocks = []
+    for rows in groups.values():
+        rows.sort(key=lambda r: r[0])
+        # 같은 시각이 중복되면 미분이 0으로 나눈다 — 앞의 것만 남긴다.
+        dedup = [rows[0]]
+        for row in rows[1:]:
+            if row[0] > dedup[-1][0]:
+                dedup.append(row)
+        if len(dedup) < max(20, k * 2):
+            continue
+        ts = np.array([r[0] for r in dedup])
+        us = np.array([r[1] for r in dedup])
+        taus = np.array([r[2] for r in dedup])
+        u_s = np.convolve(us, kernel, mode="valid")
+        half = k // 2
+        t_s, tau_s = ts[half:len(ts) - half], taus[half:len(taus) - half]
+        n = min(len(u_s), len(t_s), len(tau_s))
+        u_s, t_s, tau_s = u_s[:n], t_s[:n], tau_s[:n]
+        if n < 20 or float(np.ptp(t_s)) <= 0.0:
+            continue
+        # 추력이 계단으로 바뀌는 지점(인가·차단)은 평활 창이 뭉개서 du/dt를
+        # 왜곡한다. 그대로 두면 m_eff가 15%쯤 높게 치우친다. 계단 주변
+        # 창 하나만큼을 버린다 — 나머지 구간은 그대로 쓴다.
+        # 실제 tau는 매 틱 조금씩 흔들린다(할당 왕복·PID 교차결합). 실측에서
+        # |dtau| 중앙값이 0.0005 N인데 계단은 11~22 N이었다. 절대 문턱 1e-6을
+        # 쓰면 지터의 69%가 계단으로 잡혀 블록이 통째로 비워진다 — 실제로
+        # 과도구간 적합이 "쓸 수 있는 수준이 없다"로 죽었다. 추력 크기에
+        # 비례한 문턱으로 인가·차단만 골라낸다.
+        step_threshold = max(1.0, 0.2 * float(np.ptp(tau_s)))
+        keep = np.ones(n, dtype=bool)
+        steps = np.nonzero(np.abs(np.diff(tau_s)) > step_threshold)[0]
+        for idx in steps:
+            lo, hi = max(0, idx - k), min(n, idx + k + 1)
+            keep[lo:hi] = False
+        if int(keep.sum()) < 20:
+            continue
+        blocks.append((np.gradient(u_s, t_s)[keep], u_s[keep], tau_s[keep]))
+    return blocks
+
+
+def transient_fit(samples: list[dict], *, xu_known: float | None = None,
+                  smooth: int = 9) -> dict:
+    """가속 구간 전체로 (m_eff, Xu, Xuu)를 푼다 — 정상상태가 필요 없다.
+
+    운동방정식은 매 표본에서 성립한다::
+
+        tau = m_eff * du/dt + Xu * u + Xuu * u|u|
+
+    정상상태 적합은 꼬리 창 한 개(약 30표본)만 쓰고 나머지를 버린다. 짧은
+    수조에서 종단속도에 도달하지 못하는 수준도 가속 곡선은 온전히 남고, 그
+    곡선이 같은 계수를 구속하므로 여기서 살려 쓴다. 추력이 0인 타행 구간까지
+    함께 넣으면 m_eff와 항력항의 공선성이 크게 풀린다.
+
+    부수적으로 ``m_eff``(질량+부가질량)를 **측정**한다. ``coast_fit``은 이 값을
+    외부에서 받아 선형으로 곱하므로, 가정값을 쓰면 그만큼 타행 Xuu가 통째로
+    치우친다. 여기서 얻은 값을 넣으면 그 의존이 끊긴다.
+
+    한계는 ``coast_fit``과 같다 — 관측 속도 범위에서 ``u``와 ``u|u|``가 거의
+    공선이라 Xu와 Xuu가 잘 분리되지 않는다. ``xu_known``을 주면 Xu를 고정하고
+    나머지 둘만 푼다. ``xu_identifiable``이 False면 Xu를 보고에 쓰지 말 것.
+
+    ``m_eff``는 **낮게 치우친다**. 회귀변수인 ``du/dt``가 미분으로 증폭된 잡음을
+    품고 있어 그 계수가 0쪽으로 끌리는 감쇠편향(errors-in-variables)이다. 합성
+    왕복에서 속도잡음 sd 0.004에 -11%, sd 0.010에 -20%였다. 반면 ``Xuu``는 같은
+    조건에서 오차 1% 안쪽이다 — **Xuu는 그대로 쓰고, m_eff는 자릿수 확인용으로만
+    볼 것.** ``coast_fit``에 넣을 때는 이 편향이 타행 Xuu를 같은 비율로 낮춘다.
+    """
+
+    blocks = _transient_blocks(samples, smooth)
+    if not blocks:
+        return {"ok": False, "reason": "쓸 수 있는 수준이 없다 (수준당 최소 20표본)"}
+
+    dudt = np.concatenate([b[0] for b in blocks])
+    u_s = np.concatenate([b[1] for b in blocks])
+    tau_s = np.concatenate([b[2] for b in blocks])
+    quad = u_s * np.abs(u_s)
+
+    if xu_known is None:
+        design = np.column_stack([dudt, u_s, quad])
+        target = tau_s
+    else:
+        design = np.column_stack([dudt, quad])
+        target = tau_s - float(xu_known) * u_s
+
+    solution, *_ = np.linalg.lstsq(design, target, rcond=None)
+    residual = target - design @ solution
+    rms = float(np.sqrt(np.mean(residual ** 2)))
+
+    if xu_known is None:
+        m_eff, xu, xuu = (float(v) for v in solution)
+    else:
+        m_eff, xuu = (float(v) for v in solution)
+        xu = float(xu_known)
+
+    if float(np.std(u_s)) > 0.0 and float(np.std(quad)) > 0.0:
+        collinearity = abs(float(np.corrcoef(u_s, quad)[0, 1]))
+    else:
+        collinearity = 1.0
+
+    # tau는 수준 안에서 상수라 R^2가 무의미하다. 잔차를 추력 크기로 정규화한다.
+    scale = float(np.mean(np.abs(tau_s))) or 1.0
+    return {
+        "ok": True,
+        "m_eff_kg": m_eff,
+        "Xu": xu,
+        "Xuu": xuu,
+        "rms_residual_n": rms,
+        "rms_relative": rms / scale,
+        "n_samples": int(len(u_s)),
+        "n_levels": len(blocks),
+        "u_range": [float(u_s.min()), float(u_s.max())],
+        "collinearity": collinearity,
+        "xu_identifiable": xu_known is None and collinearity < 0.98,
+        "m_eff_plausible": 5.0 < m_eff < 60.0,
+    }

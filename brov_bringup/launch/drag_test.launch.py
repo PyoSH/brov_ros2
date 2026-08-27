@@ -32,8 +32,9 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -51,6 +52,8 @@ def generate_launch_description() -> LaunchDescription:
     localization_share = get_package_share_directory("brov_localization")
 
     send_pwm = LaunchConfiguration("send_pwm")
+    use_pool_alignment = LaunchConfiguration("use_pool_alignment")
+    vision = IfCondition(use_pool_alignment)
     arm = LaunchConfiguration("arm")
     connection = LaunchConfiguration("connection")
     udp_port = LaunchConfiguration("udp_port")
@@ -111,6 +114,17 @@ def generate_launch_description() -> LaunchDescription:
                 ),
             ),
             DeclareLaunchArgument(
+                "use_pool_alignment", default_value="true",
+                choices=["true", "false"],
+                description=(
+                    "false면 ArUco pool 정렬을 쓰지 않는다. 카메라/마커/정렬 "
+                    "노드를 띄우지 않고, prepare 시점 포즈를 원점으로 한 "
+                    "상대 프레임에서 주행한다. 절대 벽 위치를 잃으므로 "
+                    "run_x_*/lane_y/target_z를 상대량으로 다시 잡아야 한다 "
+                    "— drag_test_odom.yaml 참조."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "send_pwm", default_value="false", choices=["true", "false"],
                 description="false면 진단 토픽만 내고 추력은 내지 않는다.",
             ),
@@ -133,13 +147,14 @@ def generate_launch_description() -> LaunchDescription:
                     "arm": arm,
                     # pool 절대위치는 쓰되(벽까지 남은 거리·차선 유지·주행거리),
                     # 미션 스택은 쓰지 않는다.
-                    "require_pool_localization": "true",
+                    "require_pool_localization": use_pool_alignment,
                     "require_resolved_mission": "false",
                 }.items(),
             ),
             Node(
                 package="brov_localization",
                 executable="pool_alignment_node",
+                condition=vision,
                 name="brov_pool_alignment",
                 output="screen",
                 emulate_tty=True,
@@ -148,6 +163,7 @@ def generate_launch_description() -> LaunchDescription:
             Node(
                 package="brov_perception",
                 executable="camera_stream_node",
+                condition=vision,
                 name="brov_camera_node",
                 output="screen",
                 emulate_tty=True,
@@ -164,6 +180,7 @@ def generate_launch_description() -> LaunchDescription:
             Node(
                 package="brov_perception",
                 executable="aruco_pose_node",
+                condition=vision,
                 name="brov_aruco_pose_node",
                 output="screen",
                 emulate_tty=True,
@@ -177,7 +194,12 @@ def generate_launch_description() -> LaunchDescription:
                 emulate_tty=True,
                 parameters=[
                     LaunchConfiguration("drag_test_config"),
-                    {"send_pwm": ParameterValue(send_pwm, value_type=bool)},
+                    {
+                        "send_pwm": ParameterValue(send_pwm, value_type=bool),
+                        "use_pool_alignment": ParameterValue(
+                            use_pool_alignment, value_type=bool
+                        ),
+                    },
                 ],
             ),
         ]
