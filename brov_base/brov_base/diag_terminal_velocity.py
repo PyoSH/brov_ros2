@@ -137,30 +137,81 @@ def _wrap_pi(angle: float) -> float:
 class _Allocator:
     """명령 wrench -> PWM, 그리고 그 PWM이 실제로 내는 wrench를 되돌려준다."""
 
-    def __init__(self, voltage: float):
-        yaml_data = load_brov2_yaml()
-        pos, dir_ = thruster_pos_dir_ned(yaml_data)
-        self.B = build_allocation_matrix(pos, dir_)
+    def __init__(self, voltage: float, dt: float = 0.04):
+        # thruster_pos_dir_ned()는 list를 반환한다. build_allocation_matrix()는
+        # tensor를 요구하므로, model_based_controller.py와 같은 순서로
+        # 모델을 먼저 만들고 그 텐서(_pos/_dir)로 할당행렬을 만든다 —
+        # 할당행렬과 추력기 모델이 같은 기하를 쓰는 것을 구조적으로 보장한다.
+        pos, dir_ = thruster_pos_dir_ned(load_brov2_yaml())
+        self.model = BROV2ThrusterModel(
+            num_envs=1, dt=dt, device="cpu", pos=pos, dir=dir_, voltage=voltage,
+        )
+        self.B = build_allocation_matrix(self.model._pos, self.model._dir)
         self.B_pinv = torch.linalg.pinv(self.B)
-        self.model = BROV2ThrusterModel(num_envs=1, device="cpu", voltage=voltage)
         self.table = T200ThrustTable(device="cpu")
         self.voltage = torch.full((1,), float(voltage))
-        rev, fwd = self.model.force_limits_n
-        self.max_reverse_n, self.max_forward_n = rev, fwd
-        # 순수 surge로 실현 가능한 최대 wrench. 수준(level)의 기준값이자
-        # v_max 계산의 tau_max이므로 생성 시점에 한 번 확정한다.
-        _, self.surge_max_n = self.surge_thrust_limits()
+        self.max_reverse_n, self.max_forward_n = self.model.force_limits_n
+        # 순수 surge로 실제 전달 가능한 최대 추력. level의 기준값이자 v_max
+        # 계산의 tau_max이므로 생성 시점에 한 번 확정한다.
+        self.surge_max_n = self._measure_surge_capability()
+        self.linear_max_n = self._measure_linear_regime()
 
-    def surge_thrust_limits(self) -> tuple[float, float]:
-        """순수 surge wrench의 실현 가능 범위 [N] (수평 4기 포화 기준)."""
-        e = torch.zeros(6)
-        e[0] = 1.0
-        f = self.B_pinv @ e                       # 단위 surge에 대한 추력기 분배
-        scale_fwd = min(
-            (self.max_forward_n if fi > 0 else -self.max_reverse_n) / abs(float(fi))
-            for fi in f if abs(float(fi)) > 1e-9
-        )
-        return -scale_fwd, scale_fwd
+    def _measure_surge_capability(self, ceiling_n: float = 400.0,
+                                  steps: int = 801) -> float:
+        """순수 surge로 실제 전달 가능한 최대 추력 [N].
+
+        추력기 한계에서 해석적으로 역산하면 틀린다 — ``force_limits_n``은 **전압
+        무관 전역 극값**이라 지금 전압에서 실현 불가능한 값을 준다(15.6V에서
+        해석값 139.7 N vs 실제 전달 124.7 N). deadband/PWM 역변환/테이블 비선형도
+        더해진다. 그래서 명령을 실제로 할당→역변환→테이블 왕복시켜 전달값의
+        최대를 찾는다.
+        """
+        best = 0.0
+        wrench = torch.zeros(6)
+        for tau in torch.linspace(0.0, ceiling_n, steps):
+            wrench[0] = float(tau)
+            _, delivered = self.apply(wrench)
+            best = max(best, float(delivered[0]))
+        return best
+
+    def _measure_linear_regime(self, margin: float = 0.98) -> float:
+        """PWM이 포화하지 않는 구간의 최대 전달 surge [N].
+
+        이 지점을 넘으면 두 가지가 동시에 깨진다. ① 수평 4기가 PWM 한계에
+        붙어서 **yaw PID가 권한을 잃는다** — 직진 유지가 안 되면 측정 자체가
+        무의미하다. ② clamp_thrust가 분배를 왜곡해 순수 surge가 아니게 된다
+        (15.6V level 0.9에서 Fz로 -0.78 N 누설). 그래서 기본 level은 이 구간
+        안에 두고, v_max는 적합된 항력곡선을 full thrust까지 외삽해서 얻는다.
+        """
+        best = 0.0
+        wrench = torch.zeros(6)
+        for tau in torch.linspace(0.0, self.surge_max_n * 1.2, 481):
+            wrench[0] = float(tau)
+            pwm, delivered = self.apply(wrench)
+            if float(pwm.abs().max()) >= margin:
+                break
+            best = max(best, float(delivered[0]))
+        return best
+
+    def surge_command_for(self, delivered_target: float) -> float:
+        """전달 추력이 ``delivered_target``이 되게 하는 명령 wrench [N].
+
+        명령→전달은 항등이 아니다. ``clamp_thrust``와 PWM 역변환/양자화 때문에
+        포화 근처에서 어긋난다 — 15.6V에서 125.65 N을 명령하면 117.73 N만 나온다.
+        level이 '실제로 낸 추력의 비율'을 뜻하게 하려고 역으로 푼다(단조 구간
+        이분법).
+        """
+        lo, hi = 0.0, 400.0
+        wrench = torch.zeros(6)
+        for _ in range(48):
+            mid = 0.5 * (lo + hi)
+            wrench[0] = mid
+            _, delivered = self.apply(wrench)
+            if float(delivered[0]) < delivered_target:
+                lo = mid
+            else:
+                hi = mid
+        return hi
 
     def apply(self, wrench: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """wrench(6, SNAME/FRD) -> (pwm(8), 실제 전달 wrench(6))."""
@@ -273,10 +324,15 @@ def _run_level(iface, alloc, args, level: float, target_depth: float,
     yaw_pid = _PID(args.att_kp, args.att_ki, args.att_kd, args.moment_limit_nm)
 
     tau_fwd_max = alloc.surge_max_n
+    # level은 '실제 낸 추력의 비율'이다. 명령값은 그렇게 되도록 역산해 고정한다.
+    tau_target = level * tau_fwd_max
+    surge_cmd = alloc.surge_command_for(tau_target)
     period = 1.0 / args.rate_hz
     t0 = time.monotonic()
     prev = t0
     start_pos = None
+    pwm_peak = 0.0
+    leak_peak = 0.0
     series: list[tuple[float, float, float]] = []      # (t, u_body, tau_x_delivered)
     abort = None
 
@@ -325,7 +381,7 @@ def _run_level(iface, alloc, args, level: float, target_depth: float,
 
         # ── wrench 조립: surge는 open-loop, 나머지는 PID ──
         wrench = torch.zeros(6)
-        wrench[0] = level * tau_fwd_max
+        wrench[0] = surge_cmd
         wrench[2] = depth_pid(depth - target_depth, dt)          # NED +z 아래
         wrench[3] = roll_pid(_wrap_pi(0.0 - roll), dt)
         wrench[4] = pitch_pid(_wrap_pi(0.0 - pitch), dt)
@@ -336,6 +392,8 @@ def _run_level(iface, alloc, args, level: float, target_depth: float,
             iface.send_pwm(pwm)
 
         series.append((elapsed, u, float(delivered[0])))
+        pwm_peak = max(pwm_peak, float(pwm.abs().max()))
+        leak_peak = max(leak_peak, float(delivered[1:3].abs().max()))
         log.append({
             "level": level, "t": elapsed, "u": u, "depth": depth,
             "roll_deg": math.degrees(roll), "pitch_deg": math.degrees(pitch),
@@ -348,7 +406,8 @@ def _run_level(iface, alloc, args, level: float, target_depth: float,
 
     # ── 정상상태 판정: 마지막 settle_window 구간의 |du/dt|와 표준편차 ──
     tail = [s for s in series if s[0] >= max(0.0, series[-1][0] - args.settle_window)] if series else []
-    result = {"level": level, "abort": abort, "n": len(series), "steady": False}
+    result = {"level": level, "abort": abort, "n": len(series), "steady": False,
+              "pwm_peak": pwm_peak, "wrench_leak_peak_n": leak_peak}
     if len(tail) >= 5:
         ts = [s[0] for s in tail]
         us = [s[1] for s in tail]
@@ -363,6 +422,7 @@ def _run_level(iface, alloc, args, level: float, target_depth: float,
             "du_dt": slope,
             "tau_x_n": statistics.fmean(taus),
             "tau_x_max_n": tau_fwd_max,
+            "pwm_saturated": pwm_peak >= 0.98,
             "steady": steady,
             "window_s": span,
         })
@@ -420,8 +480,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--voltage", type=float, default=None,
                    help="시험 직전 실측 배터리 전압 [V]. T200 추력이 전압에 의존하므로 필수")
     p.add_argument("--levels", type=float, nargs="+",
-                   default=[0.30, 0.45, 0.60, 0.75, 0.90, 1.00],
-                   help="정규화 surge 추력 수준 (0~1)")
+                   default=[0.25, 0.40, 0.55, 0.70, 0.85],
+                   help="surge 추력 수준 — '실제 전달 추력 / 최대 전달 추력' 비율. "
+                        "기본값은 PWM 비포화 구간 안에 있다(포화하면 yaw 권한 상실). "
+                        "v_max는 적합된 항력곡선의 외삽으로 얻으므로 1.0까지 갈 필요 없다.")
     p.add_argument("--depth", type=float, default=1.0, help="유지 깊이 [m, NED +아래]")
     p.add_argument("--dwell", type=float, default=8.0, help="수준별 유지 시간 [s]")
     p.add_argument("--accel-grace", type=float, default=2.0,
@@ -479,10 +541,20 @@ def main(argv=None) -> int:
             print("--levels는 (0, 1] 범위여야 한다.", file=sys.stderr)
             return 2
 
-    alloc = _Allocator(args.voltage if args.voltage is not None else 14.8)
+    alloc = _Allocator(args.voltage if args.voltage is not None else 14.8,
+                       dt=1.0 / args.rate_hz)
     tau_fwd_max = alloc.surge_max_n
-    print(f"[설정] 전압 {alloc.voltage.item():.1f} V, 실현 가능 최대 surge 추력 "
-          f"{tau_fwd_max:.1f} N, 수준 {args.levels}")
+    linear_level = alloc.linear_max_n / tau_fwd_max if tau_fwd_max > 0 else 0.0
+    print(f"[설정] 전압 {alloc.voltage.item():.1f} V")
+    print(f"       순수 surge 최대 전달 추력  {tau_fwd_max:6.1f} N  (= level 1.00)")
+    print(f"       PWM 비포화 한계            {alloc.linear_max_n:6.1f} N  "
+          f"(= level {linear_level:.2f})")
+    print(f"       수준 {args.levels}")
+    hot = [lv for lv in args.levels if lv > linear_level]
+    if hot:
+        print(f"       [경고] level {hot}은 PWM 포화 구간이다 — 수평 4기가 한계에 붙어")
+        print(f"              yaw PID가 권한을 잃고 wrench 누설이 생긴다. 직진 유지가")
+        print(f"              안 되면 측정이 무의미하므로 level {linear_level:.2f} 이하를 권한다.")
 
     if args.dry_run:
         print("[dry-run] 기체 연결 없이 종료. 상태기계/적합은 --fit-from으로 확인할 것.")
@@ -513,13 +585,18 @@ def main(argv=None) -> int:
         try:
             for i, level in enumerate(args.levels):
                 print(f"\n[{i+1}/{len(args.levels)}] level {level:.2f} "
-                      f"→ {level*tau_fwd_max:.1f} N, yaw 목표 {math.degrees(target_yaw):+.0f}°")
+                      f"→ 목표 전달 {level*tau_fwd_max:.1f} N, "
+                      f"yaw 목표 {math.degrees(target_yaw):+.0f}°")
                 res = _run_level(iface, alloc, args, level, args.depth, target_yaw, log)
                 results.append(res)
                 if res.get("steady"):
                     print(f"    정상상태 u = {res['u_mps']:+.3f} m/s "
                           f"(sd {res['u_sd']:.3f}, du/dt {res['du_dt']:+.3f}), "
                           f"전달 추력 {res['tau_x_n']:.1f} N")
+                    if res.get("pwm_saturated"):
+                        print(f"    [경고] PWM 포화 (peak {res['pwm_peak']:.3f}), "
+                              f"wrench 누설 {res['wrench_leak_peak_n']:.2f} N — "
+                              f"yaw 권한이 없었을 수 있다")
                 else:
                     reason = res.get("abort") or "정상상태 미도달"
                     print(f"    사용 불가 — {reason}")
@@ -537,6 +614,7 @@ def main(argv=None) -> int:
         json.dump({
             "voltage_v": float(alloc.voltage.item()),
             "tau_x_max_n": tau_fwd_max,
+            "pwm_saturated": pwm_peak >= 0.98,
             "args": vars(args),
             "levels": results,
             "timeseries": log,
