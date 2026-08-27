@@ -19,11 +19,13 @@ install_mk2/
 log_mk2/
 
 # Runtime output is machine/experiment-specific.
-runtime/calibration/*
+# runtime/calibration/*
 runtime/bags/*
 runtime/logs/*
 runtime/experiments/*
 !runtime/calibration/README.md
+# 카메라 고유 특성이지 머신별 산출물이 아니다 — ArUco 포즈가 여기 의존한다.
+!runtime/calibration/camera_intrinsics.yaml
 !runtime/bags/README.md
 !runtime/logs/README.md
 !runtime/experiments/README.md
