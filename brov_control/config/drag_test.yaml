@@ -1,0 +1,70 @@
+# 실기 surge 항력 측정 — 수조 3~4m × 폭 2m × 수심 1.15m 기준
+brov_drag_test:
+  ros__parameters:
+    # ── 시험 설계 ──
+    # level은 tau_max 비율이라 전압에 거의 불변하다. 두 가설(v_max 0.88 / 1.48)
+    # 모두에서 u=0.5 m/s를 가운데 두고, 전 수준이 1.8m 주행 안에 들어간다.
+    # 최고 0.60은 PWM 비포화 한계(15.4V에서 0.87)에 한참 못 미친다.
+    levels: [0.10, 0.20, 0.32, 0.45, 0.60]
+    repeat_first_level: true        # 최저 수준을 끝에 한 번 더 — 재순환 편향 검사
+    voltage: 15.4                   # 시험 직전 실측값으로 바꿀 것 (T200은 전압 의존)
+    buoyancy_n: 1.96                # 순중량 200g 음성. 없으면 수준마다 초반에 가라앉는다
+    rate_hz: 25.0                   # obs_node의 PWM 워치독이 0.25s — 4Hz 밑으로 가면 fault
+
+    # ── 정상상태 판정 (몬테카를로 400회로 확정) ──
+    # 창 1.5s는 가설 B 상위 수준을 30%/0%로 죽인다(거리 한계가 일찍 걸려 tail이
+    # 가속구간까지 뒷걸음질). 문턱 0.02는 level 0.60을 49%만 살린다.
+    settle_window_s: 1.2
+    settle_slope: 0.03
+    settle_sd: 0.05
+    run_timeout_s: 8.0
+
+    # ── pool 프레임 기하 ──
+    # pool 원점은 바닥 모서리, +X는 마커 벽 방향, +Y 좌현, +Z 위.
+    # 마커는 x=3.95에 있고 demo_orchestrator의 안전상자는 [0.35..3.65] x [0.30..1.40]다.
+    axis_heading_rad: 0.0           # 주행축 = pool +X
+    run_x_min: 0.50
+    run_x_max: 2.60                 # 1.8m 주행 + 타행 0.62m + 여유. 벽까지 남겨둘 것
+    run_start_margin_m: 0.15
+    lane_y: 0.85                    # 폭 2m의 중앙 차선
+    max_cross_track_m: 0.35
+    target_z: 0.575                 # 수심 1.15m의 정중앙 — 상하 여유를 동시에 최대화
+    max_z_error_m: 0.30             # 한계에서도 바닥 15cm / 수면 14cm 남는다
+    z_min: 0.20
+    z_max: 0.90
+    max_tilt_deg: 30.0
+
+    # ── 단계 시간 ──
+    start_hold_s: 30.0              # 이 구간에 테더를 놓는다. 깊이·방위가 잡히는지 볼 것
+    inter_level_wait_s: 60.0        # 재순환 안정화 — 이 수조 최대의 계통오차
+    coast_s: 3.0                    # 타행 기록: 추력 테이블과 무관한 Xuu 교차검증
+    approach_timeout_s: 60.0
+    settle_yaw_timeout_s: 20.0
+    settle_yaw_tol_deg: 5.0
+    settle_yaw_hold_s: 1.5
+    turnaround_timeout_s: 30.0
+
+    # ── 게인 (Z-up/FLU wrench, model_based_controller와 같은 규약) ──
+    depth_kp: 60.0
+    depth_ki: 8.0
+    depth_kd: 20.0
+    heave_limit_n: 60.0
+    sway_kp: 25.0
+    sway_kd: 12.0
+    sway_limit_n: 12.0              # 낮게 둔다 — 차선 유지가 목적이지 기동이 아니다
+    approach_surge_kp: 20.0
+    approach_surge_limit_n: 15.0
+    att_kp: 8.0
+    att_ki: 1.0
+    att_kd: 3.0
+    moment_limit_nm: 12.0
+    minimum_active_pwm: 0.10        # T200 deadband 0.075 위로 들어올린다
+    thruster_force_activation: 0.25
+
+    # ── 기타 ──
+    localization_max_age_s: 1.0
+    odometry_max_age_s: 0.5
+    localization_min_samples: 20    # localization_node의 안전 하한 — 낮출 수 없다
+    service_timeout_s: 15.0
+    output_path: ""                 # 비우면 $BROV_DATA_DIR/drag_test.json
+    send_pwm: true

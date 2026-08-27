@@ -33,6 +33,7 @@ setup(
                 "model_based_controller_node = "
                 "brov_control.model_based_controller_node:main"
             ),
+            "drag_test_node = brov_control.drag_test_node:main",
         ],
     },
 )

@@ -382,7 +382,10 @@ def _run_level(iface, alloc, args, level: float, target_depth: float,
         # ── wrench 조립: surge는 open-loop, 나머지는 PID ──
         wrench = torch.zeros(6)
         wrench[0] = surge_cmd
-        wrench[2] = depth_pid(depth - target_depth, dt)          # NED +z 아래
+        # 오차는 '목표 - 실측'이다. 수직 4기는 NED에서 dir=[0,0,+1](아래)이라
+        # wrench[2]>0이 하방 추력이므로, depth-target으로 쓰면 깊을수록 더 깊이
+        # 미는 양성 피드백이 된다. guidance.py:598, 그리고 아래 자세 3축과 같은 규약.
+        wrench[2] = depth_pid(target_depth - depth, dt) - args.buoyancy_n
         wrench[3] = roll_pid(_wrap_pi(0.0 - roll), dt)
         wrench[4] = pitch_pid(_wrap_pi(0.0 - pitch), dt)
         wrench[5] = yaw_pid(_wrap_pi(target_yaw - yaw), dt)
@@ -413,7 +416,15 @@ def _run_level(iface, alloc, args, level: float, target_depth: float,
         us = [s[1] for s in tail]
         taus = [s[2] for s in tail]
         span = ts[-1] - ts[0]
-        slope = (us[-1] - us[0]) / span if span > 0 else float("inf")
+        # du/dt는 끝점차분이 아니라 최소자승으로 낸다. 끝점차분은 양 끝 두
+        # 샘플만 쓰므로 잡음이 sigma*sqrt(2)/span인데, 짧은 수조에서 요구되는
+        # settle_window 1.2s / EKF 속도잡음 0.02 m/s면 0.024로 판정 문턱(0.02)을
+        # 넘어 멀쩡한 수준이 기각된다. 최소자승은 sigma*sqrt(12/(N*span^2))로
+        # 같은 조건에서 0.011 — 약 2.2배 여유가 생긴다.
+        tbar, ubar = statistics.fmean(ts), statistics.fmean(us)
+        sxx = sum((t - tbar) ** 2 for t in ts)
+        slope = (sum((t - tbar) * (u - ubar) for t, u in zip(ts, us)) / sxx
+                 if sxx > 0 else float("inf"))
         sd = statistics.pstdev(us)
         steady = abs(slope) < args.settle_slope and sd < args.settle_sd
         result.update({
@@ -450,7 +461,8 @@ def _turnaround(iface, alloc, args, target_depth: float, target_yaw: float) -> N
         _, _, yaw = _roll_pitch_yaw(q)
         err = _wrap_pi(target_yaw - yaw)
         wrench = torch.zeros(6)
-        wrench[2] = depth_pid(float(snap["pos_ned"].reshape(3)[2]) - target_depth, period)
+        wrench[2] = (depth_pid(target_depth - float(snap["pos_ned"].reshape(3)[2]), period)
+                     - args.buoyancy_n)
         wrench[5] = yaw_pid(err, period)
         pwm, _ = alloc.apply(wrench)
         iface.send_pwm(pwm)
@@ -462,6 +474,69 @@ def _turnaround(iface, alloc, args, target_depth: float, target_yaw: float) -> N
             settled_since = None
         time.sleep(period)
     iface.neutral_stop()
+
+
+def _hold_neutral(iface, alloc, args, target_depth: float, target_yaw: float,
+                  seconds: float) -> None:
+    """surge 0으로 제자리 유지하며 수조 물이 잠잠해지길 기다린다.
+
+    좁은 수조에서는 추력 제트가 벽에 반사돼 환류가 생기고, 기체가 자기가 만든
+    흐름을 타면 종단속도가 편향된다(3~4m 수조에서 가장 큰 계통오차). 물 7m^3에
+    수준당 수십 N.s를 주입하므로 수준 사이에 가라앉을 시간이 필요하다.
+    ``_turnaround()``는 yaw만 맞으면 3~5초 만에 반환하므로 그것만으로는 부족하다.
+
+    surge만 0이고 자세 4축(깊이/roll/pitch/yaw)은 모두 잡는다. yaw를 놓으면
+    테더 장력이나 추력기 비대칭 같은 작은 토크에도 계속 돌고, 다음 수준이
+    ``target_yaw``와 다른 방위에서 시작해 직진 전제가 깨진다. 방위를 '유지'하는
+    데 드는 차동 추력은 180° 선회와 비교가 안 되게 작으므로 물을 휘젓지 않는다.
+    """
+    if args.dry_run or seconds <= 0.0:
+        return
+    depth_pid = _PID(args.depth_kp, args.depth_ki, args.depth_kd, args.heave_limit_n)
+    roll_pid = _PID(args.att_kp, args.att_ki, args.att_kd, args.moment_limit_nm)
+    pitch_pid = _PID(args.att_kp, args.att_ki, args.att_kd, args.moment_limit_nm)
+    yaw_pid = _PID(args.att_kp, args.att_ki, args.att_kd, args.moment_limit_nm)
+    period = 1.0 / args.rate_hz
+    deadline = time.monotonic() + seconds
+    yaw_peak = 0.0
+    while time.monotonic() < deadline:
+        snap = iface.snapshot()
+        if snap is None:
+            break
+        roll, pitch, yaw = _roll_pitch_yaw(snap["att_quat_ned"].reshape(4))
+        yaw_err = _wrap_pi(target_yaw - yaw)
+        yaw_peak = max(yaw_peak, abs(yaw_err))
+        wrench = torch.zeros(6)
+        wrench[2] = (depth_pid(target_depth - float(snap["pos_ned"].reshape(3)[2]), period)
+                     - args.buoyancy_n)
+        wrench[3] = roll_pid(_wrap_pi(0.0 - roll), period)
+        wrench[4] = pitch_pid(_wrap_pi(0.0 - pitch), period)
+        wrench[5] = yaw_pid(yaw_err, period)
+        pwm, _ = alloc.apply(wrench)
+        iface.send_pwm(pwm)
+        time.sleep(period)
+    iface.neutral_stop()
+    if yaw_peak > math.radians(15.0):
+        print(f"    [경고] 유지 중 yaw 최대 편차 {math.degrees(yaw_peak):.0f}° — "
+              f"방위 유지가 안 되고 있다. 진행 전 원인을 볼 것")
+
+
+def _save(args, alloc, tau_fwd_max: float, results: list, log: list) -> None:
+    """측정 기록을 JSON으로 저장한다. 어떤 경로로 끝나든 호출된다."""
+    payload = {
+        "voltage_v": float(alloc.voltage.item()),
+        "tau_x_max_n": tau_fwd_max,
+        # 수준별 pwm_saturated의 집계. 예전에는 _run_level의 지역변수 pwm_peak을
+        # 여기서 참조해 NameError로 죽었다 — disarm 뒤, json.dump 인자를 만드는
+        # 중이라 주행을 다 마치고도 기록이 0바이트로 남았다.
+        "pwm_saturated": any(r.get("pwm_saturated") for r in results),
+        "args": vars(args),
+        "levels": results,
+        "timeseries": log,
+    }
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
+    print(f"\n기록 저장: {args.out}  (수준 {len(results)}개, 표본 {len(log)}개)")
 
 
 # ----------------------------------------------------------------------
@@ -512,6 +587,33 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--att-kd", type=float, default=3.0)
     p.add_argument("--moment-limit-nm", type=float, default=12.0)
 
+    p.add_argument("--connection", type=str, default="udpin:0.0.0.0:14550",
+                   help="MAVLink 연결 문자열 (diag_thruster_map.py와 동일 기본값)")
+    p.add_argument("--reversal-profile", type=str, default="real_brov2",
+                   choices=("real_brov2", "edo_sitl_identity"),
+                   help="추력기 배선 반전 프로파일. 실기는 real_brov2 "
+                        "(T2/T3/T8 반전). edo_sitl_identity는 SITL 전용이고 "
+                        "udpin: 연결에서만 허용된다. 기본값은 실기 쪽으로 "
+                        "fail-closed")
+
+    p.add_argument("--start-hold", type=float, default=0.0,
+                   help="첫 수준 전 제자리 유지 시간 [s] — 테더로 잡고 있다가 "
+                        "놓는 절차라면 놓을 시간과 깊이 루프가 잡을 시간을 준다. "
+                        "이 구간에서 깊이가 안 잡히면 그대로 중단할 것")
+
+    p.add_argument("--buoyancy-n", type=float, default=0.0,
+                   help="순중량 전방보상 [N] — 기체가 가라앉으면 양수. "
+                        "수직 4기에 상시 상방으로 더해져 PID는 잔차만 맡는다. "
+                        "0이면 PID가 순중량 전체를 적분으로 따라잡아야 하는데, "
+                        "_run_level은 수준마다 PID를 새로 만들어 적분이 0에서 "
+                        "시작하므로 매 수준 초반에 가라앉는 과도가 생긴다. "
+                        "음성부력 상태로 시험한다면 반드시 실측값을 넣을 것")
+
+    p.add_argument("--inter-level-wait", type=float, default=0.0,
+                   help="선회 후 다음 수준까지 제자리 대기 [s] — 좁은 수조에서 "
+                        "추력 제트의 벽 반사로 생긴 환류가 가라앉을 시간. "
+                        "3~4m 수조라면 60 이상을 권한다(0이면 대기 없음)")
+
     p.add_argument("--turnaround-timeout", type=float, default=20.0)
     p.add_argument("--turnaround-tol-deg", type=float, default=10.0)
     p.add_argument("--turnaround-hold", type=float, default=1.0)
@@ -560,12 +662,27 @@ def main(argv=None) -> int:
         print("[dry-run] 기체 연결 없이 종료. 상태기계/적합은 --fit-from으로 확인할 것.")
         return 0
 
-    from brov_base.mavlink_interface import RealRobotInterface
+    from brov_base.mavlink_interface import (
+        RealRobotInterface,
+        thruster_reversal_sign_for_profile,
+    )
+
+    # 배선 반전은 obs_node.py의 실비행 경로와 같은 방식으로 정한다.
+    # diag_thruster_map.py가 [1]*8을 쓰는 것은 그것이 반전 부호를 '측정하는'
+    # 도구이기 때문이고, 여기서 따라 쓰면 T2/T3/T8이 반대로 밀어 surge와
+    # yaw/깊이 루프가 모두 깨진다.
+    reversal = thruster_reversal_sign_for_profile(args.reversal_profile,
+                                                  args.connection)
+    print(f"[연결] {args.connection}  배선 프로파일 {args.reversal_profile} "
+          f"sign={[int(v) for v in reversal.tolist()]}")
 
     log: list[dict] = []
     results: list[dict] = []
-    with RealRobotInterface() as iface:
-        iface.connect()
+    with RealRobotInterface(args.connection,
+                            thruster_reversal_sign=reversal) as iface:
+        # __enter__가 이미 connect()를 부른다. 여기서 또 부르면 소켓을 다시
+        # bind하고 _recv_loop 스레드가 하나 더 뜬다 — 두 소켓이 같은 포트의
+        # 패킷을 나눠 받아 텔레메트리가 끊긴다.
         ctrl = iface.control_snapshot()
         if ctrl["custom_mode"] != _MANUAL_CUSTOM_MODE:
             print(f"MANUAL mode가 아니다 (custom_mode={ctrl['custom_mode']}). 중단.",
@@ -583,6 +700,12 @@ def main(argv=None) -> int:
         target_yaw = yaw0
 
         try:
+            if args.start_hold > 0.0:
+                print(f"\n[시작 전] 제자리 유지 {args.start_hold:.0f} s "
+                      f"— 지금 테더를 놓고 깊이가 잡히는지 볼 것")
+                _hold_neutral(iface, alloc, args, args.depth, target_yaw,
+                              args.start_hold)
+
             for i, level in enumerate(args.levels):
                 print(f"\n[{i+1}/{len(args.levels)}] level {level:.2f} "
                       f"→ 목표 전달 {level*tau_fwd_max:.1f} N, "
@@ -606,20 +729,22 @@ def main(argv=None) -> int:
                     target_yaw = _wrap_pi(target_yaw + math.pi)
                     print(f"    선회 → {math.degrees(target_yaw):+.0f}°")
                     _turnaround(iface, alloc, args, args.depth, target_yaw)
+                    if args.inter_level_wait > 0.0:
+                        print(f"    물 안정화 대기 {args.inter_level_wait:.0f} s")
+                        _hold_neutral(iface, alloc, args, args.depth, target_yaw,
+                                      args.inter_level_wait)
+        except KeyboardInterrupt:
+            # 중단해도 여기까지 모은 표본으로는 적합을 보여준다. 기록은 어차피
+            # finally에서 저장되므로 --fit-from으로 다시 볼 수도 있다.
+            print("\n[중단] 사용자 인터럽트 — 여기까지의 표본으로 적합한다.",
+                  file=sys.stderr)
         finally:
             iface.neutral_stop()
             iface.disarm()
+            # 저장은 finally에 둔다. Ctrl-C/E-stop/예외로 끊겨도 그때까지의
+            # 표본과 시계열이 남아야 한다 — 좁은 수조에서는 중단이 상수다.
+            _save(args, alloc, tau_fwd_max, results, log)
 
-    with open(args.out, "w", encoding="utf-8") as fh:
-        json.dump({
-            "voltage_v": float(alloc.voltage.item()),
-            "tau_x_max_n": tau_fwd_max,
-            "pwm_saturated": pwm_peak >= 0.98,
-            "args": vars(args),
-            "levels": results,
-            "timeseries": log,
-        }, fh, indent=2)
-    print(f"\n기록 저장: {args.out}")
     report(fit_drag(results))
     return 0
 

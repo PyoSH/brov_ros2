@@ -1,0 +1,18 @@
+{
+  "stop_reason": "사용자 인터럽트",
+  "tau_x_max_n": 123.89158630371094,
+  "pwm_linear_max_n": 107.16645050048828,
+  "voltage_v": 15.4,
+  "buoyancy_n": 1.96,
+  "levels": [],
+  "fit": {
+    "ok": false,
+    "reason": "정상상태 표본 0개 (최소 2개 필요)"
+  },
+  "coast_fits": [],
+  "recirculation": {
+    "checked": false,
+    "reason": "반복 측정된 수준이 없다 — 최저 수준을 두 번 넣을 것"
+  },
+  "timeseries": []
+}

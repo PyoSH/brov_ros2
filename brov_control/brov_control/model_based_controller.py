@@ -152,6 +152,21 @@ class ModelBasedController:
             torch.minimum(torque_zup, self.torque_limit), -self.torque_limit
         )
         wrench_zup = torch.cat((force_zup, torque_zup))
+        return self.allocate(wrench_zup)
+
+    def allocate(self, wrench_zup: torch.Tensor) -> ControllerOutput:
+        """Turn a Z-up/FLU wrench into thruster force and normalized PWM.
+
+        Split out of :meth:`compute` so callers that build a wrench some other
+        way — e.g. the drag test, whose surge term is deliberately open-loop —
+        share this exact allocation, deadband, and clamping path instead of
+        re-deriving the ZUP->SNAME signs.
+        """
+        wrench_zup = torch.as_tensor(
+            wrench_zup, dtype=torch.float32, device=self.device
+        )
+        if wrench_zup.shape != (6,) or not torch.isfinite(wrench_zup).all():
+            raise ValueError("wrench_zup must be a finite six-element vector")
 
         wrench_sname = wrench_zup * self._wrench_transform
         desired_force = self.allocation_pinv @ wrench_sname
