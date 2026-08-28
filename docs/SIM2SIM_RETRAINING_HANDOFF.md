@@ -1,5 +1,13 @@
 # Sim2Sim and Retraining Handoff
 
+> **[2026-08-28] 이 문서가 언급하는 `sim2swim_deploy_v2`~`v6` 번들은 저장소에서 제거됐다.**
+> 아래 내용은 그 시기의 실험 기록이므로 이름을 그대로 둔다 — 지우면 기록이 깨진다.
+> 그 계보는 논문 Eq.(8)의 `w_a = 0.3` 아래에서 나온 **나쁜 draw 하나를 다섯 번
+> 패치한 것**이고, 원인이 보상으로 확정되면서 후보 자격을 잃었다(시드 재현율 1/5,
+> `w_a`만 0.017로 낮추면 5/5·Fig.4 3/3 통과). 현재 배포 후보는
+> `artifacts/policies/sim2swim_paperfix_wa0017_mk2_s42_i299/` 하나다.
+> 복원이 필요하면 `git checkout eae2ed7^ -- artifacts/policies/sim2swim_deploy_v5_mk2_s42_i299`.
+
 ## Status: superseded by the A/B/C/D retrain investigation
 
 This document is a historical handoff written before the A(episode
