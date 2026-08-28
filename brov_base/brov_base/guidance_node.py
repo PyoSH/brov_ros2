@@ -101,6 +101,12 @@ class GuidanceNode(Node):
             **({"lookahead_vert": vert} if vert > 0.0 else {}),
         )
         self._seq = 0
+        # LOSGuidance는 heading_mode="straight"/"takeoff_then_align"에서 기준 자세를
+        # reset(initial_quat=...) 시점에 잡는다. 호출하지 않으면 identity가 남아,
+        # 기체가 90° yaw로 떠 있으면 목표 자세가 identity가 되어 **자세 오차 90°**로
+        # 시작한다(실제 SITL에서 z_q 포화 + yaw 토크 -22 N·m 포화로 드러났다).
+        # 첫 유효 state에서 한 번 잡는다.
+        self._initialized = False
         self._pub = self.create_publisher(DesiredState, "/brov/desired", 10)
         self.create_subscription(BrovState, "/brov/state", self._on_state, 1)
         self.get_logger().info(
@@ -140,6 +146,14 @@ class GuidanceNode(Node):
                            dtype=torch.float32)
         quat = torch.tensor([[state.attitude.w, state.attitude.x,
                               state.attitude.y, state.attitude.z]], dtype=torch.float32)
+
+        if not self._initialized:
+            self._los.reset(torch.tensor([0]), initial_quat=quat)
+            self._initialized = True
+            self.get_logger().info(
+                f"기준 자세 확정 — q0 = [{quat[0,0]:.4f}, {quat[0,1]:.4f}, "
+                f"{quat[0,2]:.4f}, {quat[0,3]:.4f}]")
+
         v_d_b, q_d = self._los.compute(pos, quat)
 
         out.velocity_body = Vector3(x=float(v_d_b[0, 0]), y=float(v_d_b[0, 1]),

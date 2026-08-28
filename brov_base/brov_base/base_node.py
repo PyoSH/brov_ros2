@@ -39,7 +39,7 @@ import time
 from geometry_msgs.msg import Quaternion, Vector3
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Empty
+from std_msgs.msg import Bool, Empty
 from std_srvs.srv import Trigger
 import torch
 
@@ -146,6 +146,11 @@ class BaseNode(Node):
 
         # ── 인터페이스 ──
         self._pub_state = self.create_publisher(BrovState, "/brov/state", 10)
+        # 제어 루프가 실제로 닫혀 있는지. observation_node가 이걸 보고 적분한다 --
+        # 루프가 열린 채(미무장/send_pwm=false) 적분하면 기체가 안 움직이는 동안
+        # v_e = -v_d 가 계속 쌓여 arm 하는 순간 적분이 이미 포화 상태다.
+        # 실제 SITL에서 z_v가 clamp 5.0에 붙는 것으로 드러났다.
+        self._pub_active = self.create_publisher(Bool, "/brov/control_active", 10)
         self.create_subscription(Wrench6, "/brov/cmd/wrench", self._on_wrench, 1)
         self.create_subscription(Empty, "/brov/estop", self._on_estop, 10)
         for name, cb in (("prepare", self._srv_prepare), ("arm", self._srv_arm),
@@ -203,6 +208,11 @@ class BaseNode(Node):
         msg = self._read_state()
         if msg is not None:
             self._pub_state.publish(msg)
+        active = bool(
+            self._send_pwm and self._armed_by_us
+            and not self._faulted and not self._estopped
+        )
+        self._pub_active.publish(Bool(data=active))
 
         # ── watchdog: 분리가 만든 위험을 갚는 장치 ──
         # 정책 노드가 죽거나 멈추면 여기서만 잡을 수 있다.

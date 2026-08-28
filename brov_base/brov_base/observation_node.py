@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 import torch
 
@@ -60,6 +61,11 @@ class ObservationNode(Node):
         self._max_dt = float(p("max_integration_dt_s").value)
         self._desired_max_age = float(p("desired_max_age_s").value)
 
+        # 제어 루프가 닫혀 있을 때만 적분한다. 열린 채로 적분하면 기체가 움직이지
+        # 않는 동안 v_e = -v_d 가 계속 쌓여, arm 하는 순간 z_v가 이미 clamp에 붙어
+        # 있다(실제 SITL에서 확인). 관측은 계속 내되 적분만 멈춘다 -- 그래야
+        # 운용자가 arm 전에 q_e/v_e를 볼 수 있다.
+        self._control_active = False
         self._desired: DesiredState | None = None
         self._desired_rx_ns: int | None = None
         self._last_state_ns: int | None = None
@@ -67,6 +73,7 @@ class ObservationNode(Node):
 
         self._pub = self.create_publisher(Observation, "/brov/observation", 1)
         self.create_subscription(DesiredState, "/brov/desired", self._on_desired, 1)
+        self.create_subscription(Bool, "/brov/control_active", self._on_active, 1)
         self.create_subscription(BrovState, "/brov/state", self._on_state, 1)
         self.create_service(
             Trigger, "/brov/observation/reset_integrator", self._srv_reset)
@@ -74,6 +81,16 @@ class ObservationNode(Node):
             f"observation_node 시작 — contract {_CONTRACT}, "
             f"clamp z_v±{p('integral_vel_limit').value} z_q±{p('integral_att_limit').value}"
         )
+
+    def _on_active(self, msg: Bool) -> None:
+        if msg.data and not self._control_active:
+            # 루프가 닫히는 순간 적분을 0에서 시작한다. 열려 있는 동안 쌓인 값은
+            # 물리적 의미가 없다(기체가 명령을 받지 않았으므로).
+            self._builder.reset_integrators()
+            self.get_logger().info("제어 활성 — 적분 초기화 후 시작")
+        elif not msg.data and self._control_active:
+            self.get_logger().info("제어 비활성 — 적분 정지")
+        self._control_active = bool(msg.data)
 
     def _on_desired(self, msg: DesiredState) -> None:
         self._desired = msg
@@ -116,8 +133,8 @@ class ObservationNode(Node):
         self._last_state_ns = now_ns
         # dt가 한계를 넘으면 **적분하지 않는다.** 한 번의 긴 공백이 적분에
         # 큰 계단을 넣으면 그 뒤 수십 초를 오염시킨다.
-        integrate = 0.0 < dt <= self._max_dt
-        if dt > self._max_dt:
+        integrate = self._control_active and 0.0 < dt <= self._max_dt
+        if self._control_active and dt > self._max_dt:
             self.get_logger().warn(f"dt {dt:.3f}s > {self._max_dt}s — 이번 스텝은 적분 생략")
 
         q = torch.tensor([state.attitude.w, state.attitude.x,
