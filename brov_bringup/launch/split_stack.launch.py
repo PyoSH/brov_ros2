@@ -28,9 +28,23 @@ obs_node는 MAVLink를 직접 열고 PWM을 직접 보낸다. 두 프로세스�
 안전
 ====
 `send_pwm`과 `arm`은 기본 false다. 실제로 추력을 내려면 둘 다 명시적으로
-true여야 하고, 그 뒤에도 `/brov/base/prepare` → `/brov/base/arm` 서비스를
-차례로 불러야 한다. 명령이 `wrench_command_timeout_s` 동안 끊기면 base가
-중립 정지한다 — 분리가 만든 위험을 갚는 유일한 장치다.
+true여야 하고, 그 뒤에도 lifecycle 서비스를 차례로 불러야 한다. 이름과 의미는
+legacy 스택과 같으므로 `demo_orchestrator_node`가 그대로 구동한다:
+
+    /brov/prepare_control   telemetry/mode 확인 + SERVO1~8 → RCPassThru
+    /brov/arm_control       하드웨어 arm (prepare 선행 필수)
+    /brov/start_control     제어 개시 — 여기서부터 적분·PWM이 나가고,
+                            waypoint_frame=start_heading의 원점이 잡힌다
+    /brov/stop_control      제어 동결 (armed 유지, 중립 송신)
+    /brov/disarm_control    제어 동결 + neutral/disarm + prepared 폐기
+    /brov/reset_integrator  적분 reset (frozen 유지)
+    /brov/estop             (토픽) 즉시 중립 + latch
+
+arm 과 start 를 나눠 둔 이유: 합치면 원점이 "추진기가 켜진 직후"로 잡히고,
+제어만 멈추려 해도 disarm 밖에 길이 없어 passthrough까지 원복된다.
+
+명령이 `wrench_command_timeout_s` 동안 끊기면 base가 중립 정지한다 — 분리가
+만든 위험을 갚는 유일한 장치다.
 """
 
 from launch import LaunchDescription
@@ -52,6 +66,21 @@ def generate_launch_description() -> LaunchDescription:
         # 선형 ±50 N이다. 틀리면 왕복이 항등이 아니라 요청의 1.4~2.1배가 나간다.
         DeclareLaunchArgument("thruster_model", default_value="t200_table",
                               choices=["t200_table", "gazebo_linear"]),
+        # 깊이 출처. 논문 5.2 는 Bar30 압력센서로 z 를 직접 측정하고 EKF 를 거치지
+        # 않는다("We measure the depth (z, positive down)").
+        #
+        # "pressure": prepare 에서 BARO_PRIMARY 를 조회해 baro instance 를 확정하고
+        #   (ArduSub 가 BARO_TYPE_WATER 인 첫 instance 를 primary 로 set_and_save
+        #   하므로 이 값이 곧 depth sensor 다 -- ArduSub/system.cpp:108,
+        #   AP_Baro.h:181), start 시점 기준압 대비 상대 깊이를 낸다. 조회에
+        #   실패하면 prepare 를 거절한다 -- 조용히 EKF 로 넘어가지 않는다.
+        #
+        # 기본값이 아직 "mavlink_ekf" 인 이유: SITL 게이트는 통과했지만
+        # (정적 상관 0.999993 / 오차 RMS 0.060 m, 미션 상승 1.767 -> 0.186 m)
+        # **실기에서 한 번도 돌리지 않았다.** 실기 전환 게이트는
+        # docs/DEPTH_SOURCE.md 를 볼 것. SITL 실험은 이 인자를 명시해서 쓴다.
+        DeclareLaunchArgument("depth_source", default_value="mavlink_ekf",
+                              choices=["mavlink_ekf", "pressure"]),
         DeclareLaunchArgument("policy_path", default_value=""),
         DeclareLaunchArgument("metadata_path", default_value=""),
         DeclareLaunchArgument("vehicle_model_path", default_value=""),
@@ -85,6 +114,7 @@ def generate_launch_description() -> LaunchDescription:
                 "connection": cfg("connection"),
                 "thruster_reversal_profile": cfg("thruster_reversal_profile"),
                 "thruster_model": cfg("thruster_model"),
+                "depth_source": cfg("depth_source"),
                 "send_pwm": cfg("send_pwm"),
                 "arm": cfg("arm"),
                 "state_rate_hz": cfg("state_rate_hz"),

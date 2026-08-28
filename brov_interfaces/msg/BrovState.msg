@@ -21,6 +21,16 @@ geometry_msgs/Vector3 angular_velocity   # body frame [rad/s]
 # 돌았는지가 결과 해석을 바꾸므로 wire에 싣는다.
 string velocity_source                   # "mavlink_ekf" | "dvl" | "gazebo_truth"
 
+# 깊이(position.z)의 출처. 논문 5.2 는 Bar30 압력센서로 깊이를 직접 측정하고
+# EKF 를 거치지 않는다. 2026-08-29 SITL 에서 LOCAL_POSITION_NED.z 가 초기값에
+# 얼어붙어(기체가 5.8 m 상승해도 ±0.1 m 로 보고) guidance 의 수직 되먹임이
+# 멀었으므로, 어느 경로로 돌았는지가 결과 해석을 바꾼다. wire 에 싣는다.
+string depth_source                      # "mavlink_ekf" | "pressure"
+# pressure 경로일 때 실제로 읽은 baro instance (BARO_PRIMARY 에서 확정).
+# SCALED_PRESSURE/2/3 = instance 0/1/2 이고, ArduSub 가 BARO_TYPE_WATER 인 첫
+# instance 를 primary 로 set_and_save 하므로 이 값이 곧 depth sensor 다.
+int8 depth_baro_instance                 # pressure 가 아니면 -1
+
 # 신선도. 소비자는 이 값으로 stale을 판정한다(자기 시계와 stamp를 비교하는
 # 것보다 안전하다 — 노드 간 시계가 다를 수 있다).
 float32 attitude_age_s

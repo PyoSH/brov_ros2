@@ -149,6 +149,15 @@ class RealRobotInterface:
         self._vel_ned = None         # torch (3,) [vN,vE,vD]
         self._ekf_vel_variance = None
         self._ekf_flags = None
+        # 논문(5.2)이 쓰는 depth sensor 경로 -- EKF 를 거치지 않는 직접 측정이다.
+        # SCALED_PRESSURE/2/3 는 baro instance 0/1/2 를 그대로 보낸다
+        # (GCS_Common.cpp:2309-2319). ArduSub 는 BARO_TYPE_WATER 인 첫 instance 를
+        # depth sensor 로 잡는데(ArduSub/system.cpp:108), 그 인덱스는 probe 순서에
+        # 달렸고 SITL 과 실기가 다르다. **추론하지 않고 셋 다 기록**한 뒤,
+        # 알려진 수직 이동으로 식별해 선언한다.
+        self._press_abs_hpa = [None, None, None]
+        self._last_press_time = [0.0, 0.0, 0.0]
+        self._press_seq = [0, 0, 0]
         self._last_att_time = 0.0
         self._last_pos_time = 0.0
         self._last_ekf_time = 0.0
@@ -307,6 +316,15 @@ class RealRobotInterface:
                     self._vel_ned = torch.tensor([msg.vx, msg.vy, msg.vz], dtype=torch.float32)
                     self._last_pos_time = now
                     self._pos_seq += 1
+                elif t in ("SCALED_PRESSURE", "SCALED_PRESSURE2", "SCALED_PRESSURE3"):
+                    # 2026-08-29 SITL: LOCAL_POSITION_NED.z 가 초기값에 얼어붙어
+                    # (기체가 5.8 m 상승해도 +-0.1 m 로 보고) guidance 의 수직
+                    # 되먹임이 멀었다. 같은 시점 수압 센서는 GT 대비 5 mm 로 맞았다.
+                    _i = {"SCALED_PRESSURE": 0, "SCALED_PRESSURE2": 1,
+                          "SCALED_PRESSURE3": 2}[t]
+                    self._press_abs_hpa[_i] = float(msg.press_abs)
+                    self._last_press_time[_i] = now
+                    self._press_seq[_i] += 1
                 elif t == "EKF_STATUS_REPORT":
                     self._ekf_vel_variance = float(msg.velocity_variance)
                     self._ekf_flags = int(msg.flags)
@@ -391,6 +409,12 @@ class RealRobotInterface:
                 "pos_ned": self._pos_ned.clone(),
                 "vel_ned": self._vel_ned.clone(),
                 "ekf_vel_variance": self._ekf_vel_variance,
+                "press_abs_hpa": list(self._press_abs_hpa),
+                "press_age_s": [
+                    (float("inf") if t0 == 0.0 else time.monotonic() - t0)
+                    for t0 in self._last_press_time
+                ],
+                "press_seq": list(self._press_seq),
                 "ekf_flags": self._ekf_flags,
                 "att_age_s": time.monotonic() - self._last_att_time,
                 "pos_age_s": time.monotonic() - self._last_pos_time,

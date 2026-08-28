@@ -31,7 +31,12 @@ class _FakeInterface:
             "vel_ned": torch.zeros(3),
             "body_rates_ned": torch.zeros(3),
             "att_age_s": 0.01, "pos_age_s": 0.01,
+            # depth sensor 경로 (논문 5.2). SCALED_PRESSURE/2/3 = instance 0/1/2.
+            "press_abs_hpa": [1013.25, 1028.0, None],
+            "press_age_s": [0.01, 0.01, float("inf")],
+            "press_seq": [1, 1, 0],
         }
+        self.params = {"BARO_PRIMARY": 0.0, "BARO_SPEC_GRAV": 1.0}
 
     def snapshot(self): return dict(self._snap)
     def control_snapshot(self):
@@ -39,6 +44,7 @@ class _FakeInterface:
     def send_pwm(self, pwm): self.sent.append(pwm.clone())
     def neutral_stop(self): self.neutral_calls += 1
     def enable_passthrough(self): pass
+    def get_parameter(self, name, timeout=5.0): return self.params.get(name)
     def arm(self): self.armed = True
     def disarm(self): self.armed = False
     def close(self, send_stop=True): self.closed = True
@@ -55,6 +61,11 @@ def _node(**params):
     iface = _FakeInterface()
     node = BaseNode(interface=iface)
     node._send_pwm = True
+    # 아래 시험들은 할당/watchdog/slew를 보는 것이라 lifecycle 자체는
+    # 관심사가 아니다. 게이트는 test_wrench_refused_until_started 와
+    # test_control_active_matches_actuation 이 따로 본다.
+    node._armed_by_us = True
+    node._started = True
     for k, v in params.items():
         setattr(node, k, v)
     return node, iface
@@ -142,6 +153,11 @@ def test_disarm_is_the_only_path_that_clears_the_fault_latch():
     assert node._faulted
     res = node._srv_disarm(None, type("R", (), {"success": False, "message": ""})())
     assert res.success and not node._faulted
+    # disarm은 latch를 풀 뿐 arm 상태까지 돌려주지 않는다 — 다시 arm 해야 한다.
+    node._on_wrench(_wrench(fx=10.0))
+    assert iface.sent == [], "disarm 직후에는 아직 구동되면 안 된다"
+    node._armed_by_us = True
+    node._started = True
     node._on_wrench(_wrench(fx=10.0))              # 이제 다시 받는다
     assert len(iface.sent) == 1
     node.destroy_node()
@@ -183,6 +199,8 @@ def test_gazebo_linear_thruster_model_makes_the_round_trip_exact():
     iface = _FakeInterface()
     node = BaseNode(interface=iface)
     node._send_pwm = True
+    node._armed_by_us = True
+    node._started = True
     node._thruster_model = "gazebo_linear"
     node._gz_half_range = 50.0
     for fx in (5.0, 20.0, 40.0, 80.0):
@@ -214,3 +232,208 @@ def test_unknown_thruster_model_is_refused():
             BaseNode(interface=_FakeInterface())
     finally:
         rnode.Node.declare_parameter = original
+
+
+def test_wrench_refused_until_started():
+    """arm 만으로는 부족하다 — start 전에는 wrench 가 추진기에 닿지 않는다.
+
+    2026-08-28 Gazebo SITL 회귀: 이 게이트가 없어 arm 전 RC override 가 나갔고,
+    ArduSub 가 `armed=False` 를 보고하는데도 servo 출력이 중립을 벗어나 기체가
+    해저(-9.99 m)까지 내려갔다. 같은 동안 observation_node 는 control_active 가
+    false 라 적분을 멈추고 있었으므로, 정책은 z_v/z_q 가 영구히 0 인 관측으로
+    실제 추진기를 몰았다.
+    """
+    R = type("R", (), {"success": True, "message": ""})
+    node, iface = _node()
+    node._armed_by_us = False
+    node._started = False
+    node._arm_permitted = True
+    node._prepared = True
+
+    node._on_wrench(_wrench(fx=30.0))
+    assert iface.sent == [], "arm 전에 PWM 이 나갔다"
+
+    assert node._srv_arm(None, R()).success
+    node._on_wrench(_wrench(fx=30.0))
+    assert iface.sent == [], "start 전에 PWM 이 나갔다"
+
+    assert node._srv_start(None, R()).success
+    node._on_wrench(_wrench(fx=30.0))
+    assert len(iface.sent) == 1, "start 후에는 나가야 한다"
+
+
+def test_stop_freezes_control_but_keeps_arm():
+    """stop 은 제어만 멈춘다 — armed 와 prepared 는 유지된다.
+
+    합쳐 두면 제어를 멈추려 할 때 disarm 밖에 길이 없고, 그러면 passthrough 가
+    원복돼 재개하려면 prepare 부터 다시 해야 한다.
+    """
+    R = type("R", (), {"success": True, "message": ""})
+    node, iface = _node()
+    node._prepared = True
+    node._on_wrench(_wrench(fx=30.0))
+    assert len(iface.sent) == 1
+
+    assert node._srv_stop(None, R()).success
+    assert node._armed_by_us and node._prepared, "stop 이 arm/prepare 까지 풀었다"
+    before = len(iface.sent)
+    node._on_wrench(_wrench(fx=30.0))
+    assert len(iface.sent) == before, "stop 뒤에도 PWM 이 나갔다"
+
+    assert node._srv_start(None, R()).success   # prepare 없이 재개된다
+    node._on_wrench(_wrench(fx=30.0))
+    assert len(iface.sent) == before + 1
+
+
+def test_start_requires_prepare_and_arm():
+    R = type("R", (), {"success": True, "message": ""})
+    node, _ = _node()
+    node._armed_by_us = False
+    node._started = False
+    node._prepared = False
+    res = node._srv_start(None, R())
+    assert not res.success and "prepare" in res.message
+
+    node._prepared = True
+    res = node._srv_start(None, R())
+    assert not res.success and "arm" in res.message
+
+    node._armed_by_us = True
+    assert node._srv_start(None, R()).success and node._started
+
+
+def test_control_active_matches_actuation():
+    """발행하는 control_active 와 실제 구동 여부가 어긋나면 안 된다.
+
+    observation_node 가 이 신호로 적분을 gate 하고 guidance_node 가 이 신호로
+    mission frame 원점을 잡으므로, 신호가 거짓이면 둘 다 잘못된 기준으로 돈다.
+    """
+    node, iface = _node()
+    for armed in (False, True):
+        for started in (False, True):
+            node._armed_by_us, node._started = armed, started
+            iface.sent.clear()
+            node._on_wrench(_wrench(fx=20.0))
+            actuated = len(iface.sent) > 0
+            active = bool(node._send_pwm and node._armed_by_us and node._started
+                          and not node._faulted and not node._estopped)
+            assert actuated == active, (
+                f"armed={armed} started={started}: 구동={actuated}, 발행={active}")
+
+
+def test_arm_refused_without_prepare():
+    """prepare 없이 arm 하면 거절한다.
+
+    prepare 가 SERVO1~8 을 RCPassThru 로 바꾼다. 그게 없으면 ArduSub 가 우리
+    추진기 PWM 을 조종사 입력으로 해석해 자체 믹싱을 돌린다 — 할당이 통째로
+    다른 것이 된다. 2026-08-28 SITL 에서 prepare 실패 + arm 성공 조합으로
+    40 m 미션이 두 번 해저 침강했다.
+    """
+    R = type("R", (), {"success": True, "message": ""})
+    node, _ = _node()
+    node._armed_by_us = False
+    node._arm_permitted = True
+    node._prepared = False
+    res = node._srv_arm(None, R())
+    assert not res.success and "prepare" in res.message
+    assert not node._armed_by_us
+
+    node._prepared = True
+    res = node._srv_arm(None, R())
+    assert res.success and node._armed_by_us
+
+
+def test_lifecycle_services_use_legacy_names():
+    """legacy 스택(demo_orchestrator)이 그대로 구동할 수 있어야 한다."""
+    node, _ = _node()
+    names = {n for n, _t in node.get_service_names_and_types()}
+    for expected in ("/brov/prepare_control", "/brov/arm_control",
+                     "/brov/start_control", "/brov/stop_control",
+                     "/brov/disarm_control"):
+        assert expected in names, f"{expected} 가 없다 — orchestrator 가 못 붙는다"
+
+
+def _prepared(node, iface):
+    R = type("R", (), {"success": True, "message": ""})
+    res = node._srv_prepare(None, R())
+    assert res.success, res.message
+    return R
+
+
+def test_depth_comes_from_the_baro_primary_instance():
+    """어느 SCALED_PRESSURE 인지 추측하지 않는다 -- BARO_PRIMARY 가 정한다.
+
+    ArduSub 는 init 에서 BARO_TYPE_WATER 인 첫 instance 를 primary 로
+    set_and_save 한다(ArduSub/system.cpp:108, AP_Baro.h:181). SITL 은 모든
+    baro 가 WATER 라(AP_Baro_SITL.cpp:21) 응답만으로는 구분되지 않으므로
+    이 파라미터가 유일하게 확실한 근거다.
+    """
+    node, iface = _node(_depth_source="pressure")
+    node._armed_by_us = False
+    node._started = False
+    node._arm_permitted = True
+    iface.params["BARO_PRIMARY"] = 1.0            # instance 1 = SCALED_PRESSURE2
+    R = _prepared(node, iface)
+    assert node._depth_baro_instance == 1
+
+    assert node._srv_arm(None, R()).success
+    assert node._srv_start(None, R()).success
+    # 기준압은 instance 1 의 값(1028.0 hPa)이어야 한다
+    assert abs(node._depth_ref_pa - 102800.0) < 1e-6
+
+    # 1 m 하강 = +9800 Pa (SPEC_GRAV 1.0). NED 는 아래가 양이므로 z = +1.0
+    iface._snap["press_abs_hpa"] = [1013.25, 1028.0 + 98.0, None]
+    msg = node._read_state()
+    assert msg.valid, msg.reason
+    assert abs(msg.position.z - 1.0) < 1e-3, msg.position.z
+    assert msg.depth_source == "pressure" and msg.depth_baro_instance == 1
+
+
+def test_depth_reference_cancels_constant_sensor_bias():
+    """상수 편의는 기준압 차감으로 정확히 상쇄된다.
+
+    SITL instance 1 은 +15 hPa 편의가 있었다. 절대 변환을 쓰면 0.15 m 오차가
+    그대로 남지만, start 시점 기준압을 빼면 사라진다.
+    """
+    node, iface = _node(_depth_source="pressure")
+    node._armed_by_us = False
+    node._started = False
+    node._arm_permitted = True
+    iface._snap["press_abs_hpa"] = [1013.25, 1013.25 + 15.0, None]   # +15 hPa 편의
+    iface.params["BARO_PRIMARY"] = 1.0
+    R = _prepared(node, iface)
+    assert node._srv_arm(None, R()).success
+    assert node._srv_start(None, R()).success
+
+    msg = node._read_state()
+    assert abs(msg.position.z) < 1e-6, f"기준 시점 깊이가 0 이 아니다: {msg.position.z}"
+
+
+def test_pressure_depth_refuses_when_parameters_unreadable():
+    """BARO_PRIMARY 를 못 읽으면 prepare 가 거절한다 -- 조용히 EKF 로 넘어가지 않는다."""
+    node, iface = _node(_depth_source="pressure")
+    iface.params.pop("BARO_PRIMARY")
+    R = type("R", (), {"success": True, "message": ""})
+    res = node._srv_prepare(None, R())
+    assert not res.success and "BARO_PRIMARY" in res.message
+
+
+def test_stale_pressure_invalidates_state():
+    """압력이 stale 이면 state 를 무효로 만든다 -- 얼어붙은 깊이로 조향하지 않는다."""
+    node, iface = _node(_depth_source="pressure")
+    node._armed_by_us = False
+    node._started = False
+    node._arm_permitted = True
+    R = _prepared(node, iface)
+    assert node._srv_arm(None, R()).success
+    assert node._srv_start(None, R()).success
+    iface._snap["press_age_s"] = [99.0, 99.0, float("inf")]
+    msg = node._read_state()
+    assert not msg.valid and "stale" in msg.reason
+
+
+def test_default_depth_source_is_still_ekf():
+    """GT 교차검증 전에는 기본 동작을 바꾸지 않는다."""
+    node, iface = _node()
+    msg = node._read_state()
+    assert msg.depth_source == "mavlink_ekf" and msg.depth_baro_instance == -1

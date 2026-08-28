@@ -502,7 +502,19 @@ class LOSGuidance:
         position_reached = (position_error < self._reach) | _passed
         if self._heading_mode == "takeoff_then_align":
             # Do not begin the horizontal loop while still far below its plane.
-            takeoff_reached = position_error < min(self._reach, 0.05)
+            #
+            # `_passed` 를 OR 로 남겨야 하는 이유 -- 2026-08-28 Gazebo SITL 이
+            # 드러냈다. 이 분기는 waypoint 0 에서 전환 조건을 5 cm 근접으로
+            # 좁히는데, 그때 위의 along-track 통과 판정을 통째로 버리면 지나친
+            # 뒤 돌아올 경로가 사라진다. 0.20 m 이륙 구간을 0.5 m/s 로 내려가면
+            # 40 ms 마다 2 cm 씩 움직이므로 5 cm 공 안에 드는 표본이 2~3 개뿐이고,
+            # 놓치면 guidance 가 하강을 영원히 명령한다. 실제로 40 m 미션 4 회 중
+            # 3 회가 이 창을 놓쳐 해저(-9.99 m)까지 내려갔다.
+            #
+            # `_passed` 는 "이륙 waypoint 를 진행방향으로 지났다" 는 뜻이므로
+            # 곧 "그 평면에 도달했거나 지났다" 와 같다 -- 위 주석이 지키려는
+            # 조건을 깨지 않는다.
+            takeoff_reached = (position_error < min(self._reach, 0.05)) | _passed
             position_reached = torch.where(
                 self._wp_idx == 0, takeoff_reached, position_reached
             )

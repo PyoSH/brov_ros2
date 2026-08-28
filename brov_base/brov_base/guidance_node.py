@@ -34,12 +34,14 @@ from __future__ import annotations
 from geometry_msgs.msg import Quaternion, Vector3
 import rclpy
 from rclpy.node import Node
+from std_msgs.msg import Bool
 import torch
 
 from brov_interfaces.msg import BrovState, DesiredState
 
 from brov_base import math_utils as mu
-from brov_base.guidance import LOSGuidance
+from brov_base.guidance import LOSGuidance, RandomAttitudeConfig
+from brov_base.mission import pool_to_mission_quaternion
 
 
 def _parse_waypoints(text: str) -> torch.Tensor:
@@ -65,6 +67,27 @@ class GuidanceNode(Node):
         self.declare_parameter("waypoints", "0,0,0;3,0,0")
         self.declare_parameter("cruise_speed", 0.2)
         self.declare_parameter("heading_mode", "straight")
+        # heading_mode="random_at_waypoint" 전용. 배선하지 않으면 LOSGuidance 의
+        # _random_q_d 가 identity 로 고정돼 case (c) 가 조용히 "upright" 로
+        # 퇴화한다 -- 실패가 아니라 **다른 실험**이 되므로 반드시 채워야 한다.
+        # 이름은 mission_manager_sim2swim_c.yaml 과 같게 둔다.
+        self.declare_parameter("random_attitude_seed", 20260814)
+        self.declare_parameter("random_attitude_reference_frame", "pool_zup_flu")
+        self.declare_parameter("random_attitude_generator_version",
+                               "sha256_counter_uniform_rpy_v1")
+        self.declare_parameter("random_attitude_rpy_min_rad",
+                               [-0.2617993877991494, -0.2617993877991494,
+                                -0.5235987755982988])
+        self.declare_parameter("random_attitude_rpy_max_rad",
+                               [0.2617993877991494, 0.2617993877991494,
+                                0.5235987755982988])
+        self.declare_parameter("random_attitude_max_slew_rate_rad_s", 0.17453292519943295)
+        self.declare_parameter("random_attitude_tolerance_rad", 0.17453292519943295)
+        self.declare_parameter("random_attitude_angular_speed_tolerance_rad_s",
+                               0.08726646259971647)
+        self.declare_parameter("random_attitude_dwell_time_s", 1.0)
+        self.declare_parameter("random_attitude_max_duration_s", 60.0)
+        self.declare_parameter("random_attitude_max_laps", 1)
         self.declare_parameter("reach_threshold", 0.15)
         self.declare_parameter("lookahead_dist", 1.0)
         self.declare_parameter("lookahead_vert", 0.0)     # 0이면 수평값과 동일
@@ -108,6 +131,36 @@ class GuidanceNode(Node):
         self._check_limits(wps, speed, lookahead, reach)
 
         vert = float(p("lookahead_vert").value)
+        self._random_cfg = None
+        if str(p("heading_mode").value) == "random_at_waypoint":
+            self._random_cfg = RandomAttitudeConfig(
+                seed=int(p("random_attitude_seed").value),
+                reference_frame=str(p("random_attitude_reference_frame").value),
+                generator_version=str(p("random_attitude_generator_version").value),
+                rpy_min_rad=tuple(float(x) for x in p("random_attitude_rpy_min_rad").value),
+                rpy_max_rad=tuple(float(x) for x in p("random_attitude_rpy_max_rad").value),
+                max_slew_rate_rad_s=float(p("random_attitude_max_slew_rate_rad_s").value),
+                attitude_tolerance_rad=float(p("random_attitude_tolerance_rad").value),
+                angular_speed_tolerance_rad_s=float(
+                    p("random_attitude_angular_speed_tolerance_rad_s").value),
+                dwell_time_s=float(p("random_attitude_dwell_time_s").value),
+                max_duration_s=float(p("random_attitude_max_duration_s").value),
+                max_laps=int(p("random_attitude_max_laps").value),
+            )
+        # pool(Z-up/FLU) 난수 자세를 guidance 의 NED 규약으로 옮기는 회전.
+        # 규약을 여기서 새로 쓰지 않고 mission.pool_to_mission_quaternion 을
+        # 그대로 쓴다 -- 두 곳에 두면 언젠가 갈라진다. SITL 에는 pool 측량이
+        # 없으므로 pool==odom (identity) 이고, 헬퍼가 odom->NED 의
+        # diag(1,-1,-1) 과 start-heading yaw 제거를 담당한다.
+        # waypoint_frame="start_heading" 이면 start 자세에 의존하므로
+        # 아래 _on_state 의 mission frame 확정 시점에 다시 계산한다.
+        self._pool_to_mission_q = None
+        if self._random_cfg is not None:
+            self._pool_to_mission_q = pool_to_mission_quaternion(
+                (0.0, 0.0, 0.0, 1.0),
+                torch.tensor([1.0, 0.0, 0.0, 0.0]),
+                self._waypoint_frame,
+            )
         self._los = LOSGuidance(
             wps, "cpu",
             lookahead_dist=lookahead,
@@ -117,6 +170,8 @@ class GuidanceNode(Node):
             loop=bool(p("loop").value),
             terminal_hold_kp=float(p("terminal_hold_kp").value),
             terminal_speed_limit=float(p("terminal_speed_limit").value),
+            random_attitude_config=self._random_cfg,
+            pool_to_mission_quaternion=self._pool_to_mission_q,
             **({"lookahead_vert": vert} if vert > 0.0 else {}),
         )
         self._seq = 0
@@ -131,6 +186,14 @@ class GuidanceNode(Node):
         self._origin_ned = torch.zeros(1, 3)
         self._pub = self.create_publisher(DesiredState, "/brov/desired", 10)
         self.create_subscription(BrovState, "/brov/state", self._on_state, 1)
+        # waypoint_frame=start_heading 의 원점은 **start 순간**의 위치와 yaw 다
+        # (legacy `/brov/start_control` 의미). 첫 유효 상태에서 잡으면 노드가
+        # 뜨자마자 -- 아직 arm 도 start 도 하기 전에 -- 원점이 굳어버린다.
+        # observation_node 가 적분을 같은 신호로 gate 하므로 기준이 일치한다.
+        self._control_active = False
+        self._last_state_wall = None      # random_at_waypoint 의 dwell 적산용 dt
+        self.create_subscription(
+            Bool, "/brov/control_active", self._on_active, 1)
         self.get_logger().info(
             f"guidance_node 시작 — waypoint {wps.shape[1]}개, "
             f"cruise {speed} m/s, heading {p('heading_mode').value}"
@@ -154,6 +217,14 @@ class GuidanceNode(Node):
 
     def _to_mission_quat(self, quat_ned: torch.Tensor) -> torch.Tensor:
         return mu.quat_mul(self._q_ned_to_mission, quat_ned)
+
+    def _on_active(self, msg: Bool) -> None:
+        """false -> true 순간에 mission frame 을 다시 잡는다."""
+        active = bool(msg.data)
+        if active and not self._control_active:
+            self._initialized = False
+            self.get_logger().info("제어 시작 — mission frame 재확정 대기")
+        self._control_active = active
 
     def _on_state(self, state: BrovState) -> None:
         out = DesiredState()
@@ -183,6 +254,11 @@ class GuidanceNode(Node):
                     f"yaw0 {float(yaw0[0]) * 57.2958:.1f}°")
             else:
                 self.get_logger().info("waypoint_frame=ned — 원시 world 좌표를 쓴다")
+            if self._random_cfg is not None and self._waypoint_frame == "start_heading":
+                # start 자세가 정해져야 계산되는 값이다 (yaw 제거항이 들어간다).
+                self._pool_to_mission_q = pool_to_mission_quaternion(
+                    (0.0, 0.0, 0.0, 1.0), quat[0], self._waypoint_frame)
+                self._los._pool_to_mission_q = self._pool_to_mission_q
             # LOSGuidance의 기준 자세도 **mission frame에서** 잡아야 한다.
             self._los.reset(torch.tensor([0]),
                             initial_quat=self._to_mission_quat(quat))
@@ -191,7 +267,19 @@ class GuidanceNode(Node):
         # 유도는 mission frame에서 계산한다.
         pos_m = mu.quat_apply(self._q_ned_to_mission, pos - self._origin_ned)
         quat_m = self._to_mission_quat(quat)
-        v_d_b, q_d_m = self._los.compute(pos_m, quat_m)
+        # random_at_waypoint 는 "자세가 목표에 들어왔고 각속도가 잦아들었을 때"
+        # dwell 을 세므로 각속도가 필요하다. state 의 body 각속도를 그대로 준다.
+        extra = {}
+        if self._random_cfg is not None:
+            omega = torch.tensor([[state.angular_velocity.x,
+                                   state.angular_velocity.y,
+                                   state.angular_velocity.z]], dtype=torch.float32)
+            extra["angular_speed_rad_s"] = omega.norm(dim=-1)
+            now_wall = self.get_clock().now().nanoseconds * 1e-9
+            extra["dt"] = (0.0 if self._last_state_wall is None
+                           else max(0.0, now_wall - self._last_state_wall))
+            self._last_state_wall = now_wall
+        v_d_b, q_d_m = self._los.compute(pos_m, quat_m, **extra)
         # q_d는 state와 **같은 프레임(NED)**으로 되돌려 보낸다. observation_node가
         # q_e = conj(q_d) x q 를 계산하는데, 두 자세의 프레임이 다르면 그 오차에
         # mission 회전이 통째로 섞인다. v_d_b는 body frame이라 변환이 없다.

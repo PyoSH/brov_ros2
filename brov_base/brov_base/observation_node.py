@@ -75,8 +75,10 @@ class ObservationNode(Node):
         self.create_subscription(DesiredState, "/brov/desired", self._on_desired, 1)
         self.create_subscription(Bool, "/brov/control_active", self._on_active, 1)
         self.create_subscription(BrovState, "/brov/state", self._on_state, 1)
-        self.create_service(
-            Trigger, "/brov/observation/reset_integrator", self._srv_reset)
+        # legacy 스택은 `/brov/reset_integrator` 를 쓴다. 같은 콜백을 두 이름에
+        # 걸어 demo_orchestrator 와 기존 운용 절차가 그대로 통하게 한다.
+        for _name in ("/brov/observation/reset_integrator", "/brov/reset_integrator"):
+            self.create_service(Trigger, _name, self._srv_reset)
         self.get_logger().info(
             f"observation_node 시작 — contract {_CONTRACT}, "
             f"clamp z_v±{p('integral_vel_limit').value} z_q±{p('integral_att_limit').value}"
