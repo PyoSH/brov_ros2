@@ -485,9 +485,21 @@ class LOSGuidance:
                 self._random_attitude_config.max_slew_rate_rad_s * float(dt),
             )
 
-        _, next_wp = self._current_and_next(self._wp_idx)
+        cur_wp_pre, next_wp = self._current_and_next(self._wp_idx)
         position_error = torch.norm(next_wp - pos_env, dim=-1)
-        position_reached = position_error < self._reach
+        # 전환 조건 둘. **근접만으로는 부족하다.**
+        #   ① 근접   ‖next_wp - pos‖ < reach
+        #   ② 통과   along-track 진행률 s 가 세그먼트 길이를 넘음
+        # BF LOS는 **무한 직선**을 따라 조향하므로 끝점을 지나도 같은 방향을
+        # 계속 가리킨다. ①만 보면 한 번 지나친 뒤 영원히 나아간다 -- 실제
+        # SITL에서 0.20 m 하강 구간을 지나쳐 8.5 m까지 가라앉았다. 구
+        # lookahead-point 법칙은 look_s를 세그먼트 끝에 clamp해서, 끝점을
+        # 지나면 to_los가 뒤를 가리켜 스스로 되돌아왔다 -- BF에는 없는 성질이다.
+        _seg = next_wp - cur_wp_pre
+        _seg_len = _seg.norm(dim=-1)
+        _seg_dir = _seg / _seg_len.clamp_min(1e-6).unsqueeze(-1)
+        _passed = ((pos_env - cur_wp_pre) * _seg_dir).sum(-1) >= _seg_len
+        position_reached = (position_error < self._reach) | _passed
         if self._heading_mode == "takeoff_then_align":
             # Do not begin the horizontal loop while still far below its plane.
             takeoff_reached = position_error < min(self._reach, 0.05)

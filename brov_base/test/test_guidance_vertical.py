@@ -87,3 +87,27 @@ def test_terminal_completion_continues_position_hold():
     v, _ = g.compute(torch.tensor([[0.8, 0.0, -0.2]]), _Q_ID)
     assert float(v[0, 0]) > 0.0                            # final waypoint로 복귀
     assert float(v[0, 2]) < 0.0                            # 다시 깊이로
+
+
+def test_waypoint_advances_when_the_vehicle_overshoots_past_the_segment_end():
+    """근접 판정을 놓쳐도 **통과**로 전환한다.
+
+    BF LOS는 무한 직선을 따라 조향하므로, 끝점을 지나도 같은 방향을 계속
+    가리킨다. 근접(reach)만 보면 한 번 지나친 뒤 영원히 나아간다 -- 실제 SITL
+    에서 0.20 m 하강 구간을 지나쳐 8.5 m까지 가라앉았다. 구 lookahead-point
+    법칙은 look_s를 세그먼트 끝에 clamp해서 스스로 되돌아왔는데, BF에는 그
+    성질이 없으므로 along-track 진행률로 보완한다.
+    """
+    g = _guidance(depth_speed_limit=1.0)
+    g._wp_idx[:] = 0
+    # 첫 세그먼트 [0,0,0] -> [0,0,-0.5] 을 훨씬 지나친 위치(reach 0.15 밖)
+    g.compute(torch.tensor([[0.0, 0.0, -8.5]]), _Q_ID)
+    assert int(g._wp_idx[0]) == 1, "통과했는데 waypoint가 안 넘어갔다"
+
+
+def test_waypoint_does_not_advance_before_the_segment_end():
+    """진행 중에는 넘어가면 안 된다 — 통과 판정이 과하면 구간을 건너뛴다."""
+    g = _guidance(depth_speed_limit=1.0)
+    g._wp_idx[:] = 0
+    g.compute(torch.tensor([[0.0, 0.0, -0.2]]), _Q_ID)     # 세그먼트 중간
+    assert int(g._wp_idx[0]) == 0

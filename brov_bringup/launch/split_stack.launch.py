@@ -67,6 +67,9 @@ def generate_launch_description() -> LaunchDescription:
         # 재려면 정본 미션처럼 true여야 한다.
         DeclareLaunchArgument("loop", default_value="false",
                               choices=["true", "false"]),
+        # 세그먼트 길이 상한. 짧게 두는 것이 안전하지만(폭주 시 멀리 못 간다),
+        # 순항 추종을 재려면 선회가 지배하지 않는 긴 직선이 필요하다.
+        DeclareLaunchArgument("max_segment_length_m", default_value="4.0"),
         # 추력을 내려면 둘 다 true여야 한다. 기본값은 안전한 쪽이다.
         DeclareLaunchArgument("send_pwm", default_value="false"),
         DeclareLaunchArgument("arm", default_value="false"),
@@ -99,6 +102,7 @@ def generate_launch_description() -> LaunchDescription:
                 "reach_threshold": cfg("reach_threshold"),
                 "waypoint_frame": cfg("waypoint_frame"),
                 "loop": cfg("loop"),
+                "max_segment_length_m": cfg("max_segment_length_m"),
             }],
         ),
         Node(
