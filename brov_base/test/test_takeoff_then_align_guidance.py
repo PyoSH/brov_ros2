@@ -108,7 +108,11 @@ def test_takeoff_can_finish_one_horizontal_leg_without_reversal() -> None:
     takeoff_v, _ = guidance.compute(
         torch.tensor([[0.0, 0.0, 0.0]]), identity, advance_waypoint=False
     )
-    assert takeoff_v[0].tolist() == pytest.approx([0.0, 0.0, 0.05])
+    # 절대허용오차 명시: BF LOS는 방향을 삼각함수로 만들므로 수직 구간에서
+    # 수평 성분이 정확한 0이 아니다 — cos(pi/2)가 float32에서 -4.4e-08이다.
+    # 구 구현은 [0,0,dz]를 정규화해 정확한 0이 나왔다. 남는 값은 2e-09로
+    # 신호(0.05)보다 7자리 작아 물리적 의미가 없다.
+    assert takeoff_v[0].tolist() == pytest.approx([0.0, 0.0, 0.05], abs=1e-6)
 
     outbound_v, _ = guidance.compute(
         torch.tensor([[0.0, 0.0, 0.2]]), identity, advance_waypoint=True

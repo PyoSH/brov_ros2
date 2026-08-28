@@ -327,7 +327,17 @@ def test_shared_fit_recovers_simulation_coefficients():
     assert fit["Xu"] == pytest.approx(SIM_XU, rel=1e-6)
     assert fit["Xuu"] == pytest.approx(SIM_XUU, rel=1e-6)
     assert fit["v_max_mps"] == pytest.approx(0.884, abs=0.01)
-    assert fit["A_ratio"] == pytest.approx(0.340, abs=0.005)
+    # A_ratio의 분모는 **K_surge = 85 N**(학습의 action 정규화 상수)이지
+    # tau_x_max_n(기체의 물리 추력 능력)이 아니다. 보상이 처벌하는 것은 정책이
+    # 내는 정규화 action ||a||이고 학습은 tau = K*a로 스케일하기 때문이다
+    # (step_2_BROV/envs/vel_env_cfg.py의 f_max). 이 시험은 예전에 0.340
+    # (= drag/tau_max)을 고정하고 있었는데, 그 정의로는 추종률이 낙관적으로
+    # 나온다 — 2026-08-28 수조 결과에서 28% vs 실제 20%.
+    #   drag(0.5) = 13.7*0.5 + 141*0.25 = 42.10 N,  42.10/85 = 0.495
+    assert fit["A_ratio"] == pytest.approx(42.10 / 85.0, abs=0.005)
+    assert fit["k_surge_n"] == pytest.approx(85.0)
+    # 정책이 명령할 수 있는 상한(85 N)에서의 최고속도. 기체 자체의 v_max와 다르다.
+    assert fit["v_max_policy_mps"] < fit["v_max_mps"]
 
 
 def test_shared_fit_separates_the_two_hypotheses():

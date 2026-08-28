@@ -264,9 +264,14 @@ class LOSGuidance:
             self._pool_to_mission_q = pool_to_mission / norm
         else:
             self._pool_to_mission_q = None
-        # depth_hold_kp / depth_speed_limit: **deprecated, no-op**.
-        # BF LOS의 vertical-track 축(υ_d)이 대체했다. 기존 config/launch가 계속
-        # 이 키를 넘겨도 깨지지 않도록 인자와 속성은 남긴다.
+        # depth_hold_kp: **deprecated, no-op.** BF LOS의 vertical-track 축(υ_d)이
+        # 대체했다 — 수평/수직 보정이 고정 크기를 두고 경쟁하지 않으므로
+        # 잠식이 없고, 정규화 이후 v_d_world[2]를 덮어쓸 이유도 없다.
+        #
+        # depth_speed_limit은 **살아 있다.** 구현이 사라진 depth-hold는 두 가지를
+        # 겸하고 있었다: (1) 수직 보정 잠식 우회 — BF가 대체, (2) **상승/하강
+        # 속도 제한** — BF가 대체하지 않는다. (2)는 별개의 안전 요구라 남긴다.
+        # 적용 방식은 아래 _apply_vertical_limit() 참조.
         self._depth_hold_kp = float(depth_hold_kp)
         self._depth_speed_limit = float(
             cruise_speed if depth_speed_limit is None else depth_speed_limit
@@ -425,6 +430,31 @@ class LOSGuidance:
         else:
             next_idx = (idx + 1) % self.num_wp
         return self._wp[env_i, idx], self._wp[env_i, next_idx]
+
+    def _apply_vertical_limit(self, v_d_world: torch.Tensor) -> torch.Tensor:
+        """상승/하강 속도를 ``depth_speed_limit`` 이하로 묶는다.
+
+        **방향을 보존하고 크기를 줄인다.** 수직 성분만 clamp하면 명령 방향이
+        경로에서 틀어지므로(구 depth-hold가 그랬다) 전체를 같은 비율로 줄인다.
+
+        대가는 그 구간에서 ``||v_d|| < cruise_speed``가 되는 것이다. 학습은
+        ``||v_d^b|| = 0.5`` 하나로 했지만 배포는 이미 0.2~0.3을 쓰므로 명령
+        크기는 배포 시점의 자유 파라미터다 — 정책은 주어진 크기를 추종한다
+        (4노드 루프 시험에서 0.3 m/s 명령에 98% 추종 확인).
+
+        수직 구간이 미션의 정규 구간이라면 이것보다 **leg별 cruise_speed**
+        (``speed_per_leg``)가 깔끔하다 — 속도 한계는 축이 아니라 구간의 성질이다.
+        이 경로는 기존 config(``depth_speed_limit``)와의 호환을 위해 남긴다.
+        """
+        if self._depth_speed_limit <= 0.0:
+            return v_d_world
+        vz = v_d_world[:, 2].abs()
+        over = vz > self._depth_speed_limit
+        if not bool(over.any()):
+            return v_d_world
+        scale = torch.ones_like(vz)
+        scale[over] = self._depth_speed_limit / vz[over]
+        return v_d_world * scale.unsqueeze(-1)
 
     def compute(
         self,
@@ -601,6 +631,7 @@ class LOSGuidance:
         cd, sd = torch.cos(chi_d), torch.sin(chi_d)
         cv, sv = torch.cos(ups_d), torch.sin(ups_d)
         v_d_world = current_speed * torch.stack([cd * cv, sd * cv, sv], dim=-1)
+        v_d_world = self._apply_vertical_limit(v_d_world)
 
         if not self._loop:
             # 마지막 waypoint에 한 번 도달했더라도 속도 목표를 0으로 고정하면
