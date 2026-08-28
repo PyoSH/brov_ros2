@@ -204,6 +204,7 @@ class LOSGuidance:
         waypoints: torch.Tensor,
         device,
         lookahead_dist: float = 1.0,
+        lookahead_vert: float | None = None,
         cruise_speed: float = 0.5,
         cruise_speed_per_leg: Sequence[float] | None = None,
         reach_threshold: float = 0.5,
@@ -231,6 +232,7 @@ class LOSGuidance:
         self._wp = waypoints
         self.device = device
         self._lookahead = lookahead_dist
+        self._lookahead_v = lookahead_dist if lookahead_vert is None else lookahead_vert
         self._speed = cruise_speed
         self._reach = reach_threshold
         self._heading_mode = heading_mode
@@ -262,6 +264,9 @@ class LOSGuidance:
             self._pool_to_mission_q = pool_to_mission / norm
         else:
             self._pool_to_mission_q = None
+        # depth_hold_kp / depth_speed_limit: **deprecated, no-op**.
+        # BF LOS의 vertical-track 축(υ_d)이 대체했다. 기존 config/launch가 계속
+        # 이 키를 넘겨도 깨지지 않도록 인자와 속성은 남긴다.
         self._depth_hold_kp = float(depth_hold_kp)
         self._depth_speed_limit = float(
             cruise_speed if depth_speed_limit is None else depth_speed_limit
@@ -270,8 +275,6 @@ class LOSGuidance:
         self._terminal_speed_limit = float(
             cruise_speed if terminal_speed_limit is None else terminal_speed_limit
         )
-        if self._depth_hold_kp <= 0.0 or self._depth_speed_limit <= 0.0:
-            raise ValueError("depth hold gain/speed limit은 양수여야 함")
         if self._terminal_hold_kp <= 0.0 or self._terminal_speed_limit <= 0.0:
             raise ValueError("terminal hold gain/speed limit은 양수여야 함")
 
@@ -561,22 +564,43 @@ class LOSGuidance:
                     self._set_deterministic_random_goal(idx)
                 self._random_dwell_s[waypoint_arrival] = 0.0
 
+        # ── Breivik & Fossen (2005) Sec. IV, 3D LOS ──
+        # Sim2Swim이 인용한 법칙이다. 경로 고정 방위각 χ_p / 앙각 υ_p를 기준으로,
+        # path-parallel frame에서 분해한 cross-track 오차 e(수평)와 vertical-track
+        # 오차 h에 각각 **독립적인** lookahead 보정을 더한다. 두 축이 독립이라
+        # 서로의 보정을 잠식하지 않고, ||v_d_world|| = cruise_speed가 정확히
+        # 보존된다 — 정책이 학습한 명령 크기는 그 값 하나뿐이라 이게 계약이다.
+        #
+        # 이전 구현("lookahead 지점을 향하는 3D 벡터 정규화")은 수평·수직 보정이
+        # 고정 크기를 두고 경쟁해서, 실측으로 cross-track 1.9m / vertical 1.24m
+        # 상태에서 수직 성분이 32% 작았다. 그 우회로 Z축에 별도 P 제어기를
+        # 덧댔었는데, 그건 정규화 **이후** v_d_world[2]를 덮어써서 ||v_d||를
+        # 0.5에서 이탈시켰다. BF는 둘 다 불필요하게 만든다.
+        #
+        # frame-agnostic이다 — 호출자가 NED를 주든 Z-up을 주든 χ_p/υ_p와 e/h가
+        # 같은 축 규약으로 계산되므로 보정 부호가 자기일관적이다.
         seg = next_wp - cur_wp
-        seg_len = seg.norm(dim=-1, keepdim=True).clamp_min(1e-6)
-        seg_dir = seg / seg_len
+        seg_dir = seg / seg.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        chi_p = torch.atan2(seg_dir[:, 1], seg_dir[:, 0])
+        ups_p = torch.atan2(seg_dir[:, 2], seg_dir[:, :2].norm(dim=-1).clamp_min(1e-9))
 
-        s = ((pos_env - cur_wp) * seg_dir).sum(-1, keepdim=True).clamp(min=0.0)
-        s = torch.minimum(s, seg_len)
-        look_s = torch.minimum(s + self._lookahead, seg_len)
-        los_point = cur_wp + look_s * seg_dir
+        cs, sn = torch.cos(chi_p), torch.sin(chi_p)
+        cu, su = torch.cos(ups_p), torch.sin(ups_p)
+        d = pos_env - cur_wp
+        e = -sn * d[:, 0] + cs * d[:, 1]
+        h = -su * (cs * d[:, 0] + sn * d[:, 1]) + cu * d[:, 2]
 
-        to_los = los_point - pos_env
+        chi_d = chi_p + torch.atan(-e / self._lookahead)
+        ups_d = ups_p + torch.atan(-h / self._lookahead_v)
+
         current_speed = (
             self._speed
             if self._speed_per_leg is None
             else self._speed_per_leg[self._wp_idx].unsqueeze(-1)
         )
-        v_d_world = current_speed * to_los / to_los.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        cd, sd = torch.cos(chi_d), torch.sin(chi_d)
+        cv, sv = torch.cos(ups_d), torch.sin(ups_d)
+        v_d_world = current_speed * torch.stack([cd * cv, sd * cv, sv], dim=-1)
 
         if not self._loop:
             # 마지막 waypoint에 한 번 도달했더라도 속도 목표를 0으로 고정하면
@@ -592,15 +616,6 @@ class LOSGuidance:
             v_d_world = torch.where(
                 self.mission_complete.unsqueeze(-1), terminal_velocity, v_d_world
             )
-
-        # 3D LOS 정규화에서는 긴 수평 lookahead가 작은 깊이 오차를 압도한다.
-        # Z(NED)는 항상 현재 세그먼트의 next waypoint 깊이를 독립 추종한다.
-        depth_error = next_wp[:, 2] - pos_env[:, 2]
-        v_d_world[:, 2] = torch.clamp(
-            self._depth_hold_kp * depth_error,
-            -self._depth_speed_limit,
-            self._depth_speed_limit,
-        )
 
         v_d_b = mu.quat_apply(mu.quat_conjugate(root_quat_w), v_d_world)
 

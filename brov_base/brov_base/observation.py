@@ -107,6 +107,40 @@ class ObservationBuilder:
         v_d_b_ned = v_d_b_ned.squeeze(0)
         q_d_ned = q_d_ned.squeeze(0)
 
+        return self.build_from_desired(
+            q_frame=q_frame,
+            body_rates_ned=body_rates_ned,
+            vel_frame=vel_frame,
+            v_d_b_ned=v_d_b_ned,
+            q_d_ned=q_d_ned,
+            dt=dt,
+            integrate=integrate,
+            pos_env=pos_env,
+        )
+
+    def build_from_desired(
+        self,
+        q_frame: torch.Tensor,        # (4,) 현재 자세 [w,x,y,z], NED body→world
+        body_rates_ned: torch.Tensor,   # (3,) NED body frame
+        vel_frame: torch.Tensor,      # (3,) world frame 선속도
+        v_d_b_ned: torch.Tensor,      # (3,) 목표 body 속도 (NED body)
+        q_d_ned: torch.Tensor,        # (4,) 목표 자세 (NED)
+        dt: float,
+        integrate: bool = True,
+        pos_env: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, dict]:
+        """유도 객체 없이, 이미 계산된 목표로 관측을 만든다.
+
+        노드 분리 때문에 필요하다 — `build()`는 guidance를 직접 호출하지만,
+        `observation_node`는 목표를 **토픽으로** 받는다. 수식은 한 벌만 두고
+        진입점만 둘로 나눈다.
+
+        **world frame 선택에 불변이다.** `q_e = conj(q_d) ⊗ q`에서 두 자세에
+        같은 프레임 회전 M이 걸리면 `conj(M q_d) ⊗ (M q) = conj(q_d) ⊗ q`로
+        소거되고, `v_e_b`는 양쪽 다 body frame이다. 그래서 origin/waypoint
+        frame은 **guidance만 소유하면 되고** 관측 노드는 알 필요가 없다.
+        (관측 16-D에 위치가 들어가지 않는다는 사실이 이것을 가능하게 한다.)
+        """
         # ── 현재 상태: NED → Z-up body ──
         q_zup = self._ned_body_to_zup(q_frame)
         omega_zup = body_rates_ned * self._t3
@@ -142,7 +176,9 @@ class ObservationBuilder:
             "v_body_zup": v_body_zup, "v_d_b_zup": v_d_b_zup,
             "q_e": q_e, "v_e_b": v_e_b, "omega_b": omega_b,
             "z_v": self._z_v.clone(), "z_q": self._z_q.clone(),
-            "pos_env": pos_env.squeeze(0),
+            # observation_node 경로에서는 위치가 없다 — 관측 16-D에 안 들어가고
+            # 프레임 불변성 때문에 필요하지도 않다. 진단용으로만 넣는다.
+            "pos_env": None if pos_env is None else pos_env.squeeze(0),
             "integrator_clamped": integrator_clamped,
         }
         return obs, debug

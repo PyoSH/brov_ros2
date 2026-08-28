@@ -9,9 +9,13 @@ find_package(std_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/AlignedOdometry.msg"
+  "msg/BrovState.msg"
+  "msg/DesiredState.msg"
   "msg/LocalizationStatus.msg"
+  "msg/Observation.msg"
   "msg/OdometrySession.msg"
   "msg/ResolvedMission.msg"
+  "msg/Wrench6.msg"
   "srv/InitializePool.srv"
   DEPENDENCIES geometry_msgs nav_msgs std_msgs
 )

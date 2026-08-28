@@ -1273,16 +1273,21 @@ class DragTestNode(Node):
             log.error(f"[적합 실패] {fit.get('reason')}")
             return
         a = fit["A_ratio"]
+        # 분모는 K_surge(학습의 action 정규화)다. tau_x_max_n(기체 물리 추력
+        # 능력)을 쓰면 추종률이 낙관적으로 나온다 — 2026-08-28 실측에서 28% vs 23%.
         track = reward_optimal_tracking(fit["Xu"], fit["Xuu"],
-                                        fit["tau_x_max_n"])
+                                        fit["k_surge_n"])
         log.info("=" * 60)
         log.info(f"실측 surge 항력   Xu = {fit['Xu']:.2f} N/(m/s)   "
                  f"Xuu = {fit['Xuu']:.2f} N/(m/s)^2   R^2 = {fit['r2']:.4f}   "
                  f"표본 {fit['n_samples']}개")
-        log.info(f"  최대 surge 추력 {fit['tau_x_max_n']:.1f} N  →  "
+        log.info(f"  기체 최대 surge 추력 {fit['tau_x_max_n']:.1f} N  →  "
                  f"v_max = {fit['v_max_mps']:.3f} m/s")
-        log.info(f"  V_d = {_PAPER_VD} m/s 유지 정규화 추력 A = {a:.3f}   "
-                 f"보상최적 추종률 {100 * track:.0f}%")
+        log.info(f"  정책 명령 상한 K_surge {fit['k_surge_n']:.1f} N  →  "
+                 f"v_max = {fit['v_max_policy_mps']:.3f} m/s  (학습/평가 실효 상한)")
+        log.info(f"  V_d = {_PAPER_VD} m/s 유지 정규화 추력 A = {a:.3f} "
+                 f"(항력 {fit['drag_at_paper_vd_n']:.1f} N / K_surge {fit['k_surge_n']:.0f} N)"
+                 f"   보상최적 추종률 {100 * track:.0f}%")
         # 판정 경계는 수조 오염(블로키지+재순환)이 값을 낮추기만 한다는 것에 근거한다.
         if fit["v_max_mps"] >= 1.15:
             log.info("→ 가설 B 확정: 시뮬레이션 Xuu(141)가 과대다. 계수를 먼저 고칠 것")

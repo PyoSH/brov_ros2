@@ -259,21 +259,45 @@ def fit_drag(samples: list[dict]) -> dict:
         "tau_x_max_n": tau_max,
         "v_max_mps": v_max,
         "drag_at_paper_vd_n": drag_vd,
-        "A_ratio": drag_vd / tau_max if tau_max > 0 else float("nan"),
+        # A는 보상 해석용이므로 분모가 K_surge(action 정규화)다. 기체의 물리
+        # 추력 능력 tau_max가 아니다 — reward_optimal_tracking() docstring 참조.
+        "A_ratio": drag_vd / _SIM_K_SURGE,
+        "k_surge_n": _SIM_K_SURGE,
+        # 정책이 명령할 수 있는 상한(K_surge)에서의 최고속도. 기체 자체의
+        # v_max_mps(tau_max 기준)와 다르며, 학습/평가에서 의미 있는 쪽은 이것이다.
+        "v_max_policy_mps": (
+            (-Xu + math.sqrt(max(0.0, Xu * Xu + 4.0 * Xuu * _SIM_K_SURGE)))
+            / (2.0 * Xuu) if Xuu > 1e-9 else
+            (_SIM_K_SURGE / Xu if Xu > 1e-9 else float("nan"))
+        ),
     }
 
 
-def reward_optimal_tracking(Xu: float, Xuu: float, tau_max: float,
+def reward_optimal_tracking(Xu: float, Xuu: float,
+                            k_surge_n: float = _SIM_K_SURGE,
                             vd: float = _PAPER_VD,
-                            w_v: float = 0.2, w_a: float = 0.3) -> float:
-    """논문 보상(Eq.6 제곱 / Eq.8 비제곱)의 정상상태 최적 추종률 [0,1]."""
-    if tau_max <= 0.0:
+                            w_v: float = 0.2, w_a: float = 0.3,
+                            square_action: bool = False) -> float:
+    """논문 보상(Eq.6 제곱 / Eq.8 비제곱)의 정상상태 최적 추종률 [0,1].
+
+    ``k_surge_n``은 **기체의 물리 추력 능력이 아니라 학습의 action 정규화
+    상수**다. 보상이 처벌하는 것은 정책이 내는 정규화 action ``‖a‖``이고,
+    학습은 ``τ = K·a``로 스케일한다 — ``step_2_BROV/envs/vel_env_cfg.py``의
+    ``f_max = (85, 85, 120, 26, 14, 22)``. 정책은 ``a = 1.0``을 내도 85 N까지만
+    쓰므로, 기체가 115 N을 낼 수 있어도 보상 계산의 분모는 85다.
+
+    이 둘을 혼동하면 추종률이 낙관적으로 나온다 — 2026-08-28 수조 실측에서
+    ``tau_max = 115.3``을 넣어 28%를 얻었으나 올바른 값은 23%였다.
+    ``v_max`` 계산에는 반대로 물리 추력 능력(``tau_x_max_n``)을 써야 한다.
+    """
+    if k_surge_n <= 0.0:
         return float("nan")
     best_u, best_r = 0.0, -1e9
     for i in range(4001):
         u = vd * i / 4000.0
-        a = (Xu * u + Xuu * u * u) / tau_max
-        r = w_v * math.exp(-(vd - u) ** 2) + w_a * math.exp(-abs(a))
+        a = (Xu * u + Xuu * u * u) / k_surge_n
+        pen = a * a if square_action else abs(a)
+        r = w_v * math.exp(-(vd - u) ** 2) + w_a * math.exp(-pen)
         if r > best_r:
             best_r, best_u = r, u
     return best_u / vd
@@ -290,17 +314,19 @@ def report(fit: dict) -> None:
     print(f"  Xuu = {fit['Xuu']:8.2f}  N/(m/s)^2    (시뮬레이션 현재값 {_SIM_XUU})")
     print(f"  R^2 = {fit['r2']:8.4f}   RMS 잔차 {fit['rms_residual_n']:.2f} N"
           f"   표본 {fit['n_samples']}개")
-    print(f"\n  최대 surge 추력 {fit['tau_x_max_n']:.1f} N  →  v_max = {fit['v_max_mps']:.3f} m/s")
+    print(f"\n  기체 최대 surge 추력 {fit['tau_x_max_n']:.1f} N  →  v_max = {fit['v_max_mps']:.3f} m/s")
+    print(f"  정책 명령 상한 K_surge {fit['k_surge_n']:.1f} N  →  "
+          f"v_max = {fit['v_max_policy_mps']:.3f} m/s   (학습/평가의 실효 상한)")
     print(f"  (시뮬레이션 현재값이 함의하는 v_max = "
           f"{(-_SIM_XU + math.sqrt(_SIM_XU**2 + 4*_SIM_XUU*_SIM_K_SURGE))/(2*_SIM_XUU):.3f} m/s,"
           f"  제조사 사양 1.5 m/s)")
 
     A = fit["A_ratio"]
-    track = reward_optimal_tracking(fit["Xu"], fit["Xuu"], fit["tau_x_max_n"])
+    track = reward_optimal_tracking(fit["Xu"], fit["Xuu"], fit["k_surge_n"])
     sim_track = reward_optimal_tracking(_SIM_XU, _SIM_XUU, _SIM_K_SURGE)
     print("\n" + "-" * 68)
     print(f"V_d = {_PAPER_VD} m/s 유지에 필요한 정규화 추력  A = {A:.3f}"
-          f"   (항력 {fit['drag_at_paper_vd_n']:.1f} N)")
+          f"   (항력 {fit['drag_at_paper_vd_n']:.1f} N / K_surge {fit['k_surge_n']:.0f} N)")
     print(f"논문 보상의 정상상태 최적 추종률 = {100*track:.0f}%"
           f"   (현재 시뮬레이션 값으로는 {100*sim_track:.0f}%)")
     print("-" * 68)
