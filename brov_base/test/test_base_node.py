@@ -170,3 +170,47 @@ def test_state_seq_increases_monotonically():
     seqs = [node._read_state().seq for _ in range(4)]
     assert seqs == sorted(seqs) and len(set(seqs)) == 4
     node.destroy_node()
+
+
+def test_gazebo_linear_thruster_model_makes_the_round_trip_exact():
+    """SITL에서는 요청한 wrench가 그대로 나가야 한다.
+
+    ardupilot_gazebo는 servo PWM을 선형으로 매핑한다:
+        cmd_thrust = ((pwm-1100)/800 - 0.5) * multiplier,  multiplier=100 -> ±50 N
+    우리가 T200 비선형 테이블을 역변환해 PWM을 만들면 그 합성이 항등이 아니다 --
+    요청 10~30 N 구간에서 Gazebo가 1.4~2.1배를 낸다. 모델을 맞추면 정확해진다.
+    """
+    iface = _FakeInterface()
+    node = BaseNode(interface=iface)
+    node._send_pwm = True
+    node._thruster_model = "gazebo_linear"
+    node._gz_half_range = 50.0
+    for fx in (5.0, 20.0, 40.0, 80.0):
+        iface.sent.clear()
+        node._on_wrench(_wrench(fx=fx))
+        pwm = iface.sent[0]
+        # Gazebo가 실제로 낼 추력 = pwm * half_range
+        delivered = pwm * node._gz_half_range
+        B = torch.linalg.pinv(node._B_pinv)
+        w = B @ delivered
+        assert abs(float(w[0]) - fx) < 1e-3, f"fx={fx}: {float(w[0])}"
+        assert abs(float(w[1])) < 1e-3 and abs(float(w[5])) < 1e-3
+    node.destroy_node()
+
+
+def test_unknown_thruster_model_is_refused():
+    """조용히 기본값으로 넘어가면 SITL/실기를 뒤바꿔도 모른다."""
+    import rclpy.node as rnode
+    original = rnode.Node.declare_parameter
+
+    def patched(self, name, value=None, *a, **kw):
+        if name == "thruster_model":
+            value = "made_up"
+        return original(self, name, value, *a, **kw)
+
+    rnode.Node.declare_parameter = patched
+    try:
+        with pytest.raises(ValueError, match="thruster_model"):
+            BaseNode(interface=_FakeInterface())
+    finally:
+        rnode.Node.declare_parameter = original

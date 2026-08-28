@@ -73,6 +73,18 @@ class BaseNode(Node):
         self.declare_parameter("battery_voltage", 14.8)
         self.declare_parameter("state_rate_hz", 50.0)
         self.declare_parameter("velocity_source", "mavlink_ekf")
+        # 액추에이터 모델. base가 소유하는 지식이고 SITL과 실기가 다르다.
+        #
+        #   t200_table    실기. T200 제조사 실측 테이블(비선형·비대칭, deadband).
+        #   gazebo_linear Edo SITL. ardupilot_gazebo가 servo PWM을 선형으로 매핑한다:
+        #                 cmd_thrust = ((pwm-1100)/800 - 0.5) * multiplier
+        #                 model.sdf의 multiplier=100 -> **선형 ±50 N**.
+        #
+        # 틀리면 왕복이 항등이 아니다. T200 역변환으로 만든 PWM을 Gazebo의 선형
+        # 법칙에 넣으면 요청의 1.05~2.75배가 나온다(중간 영역 1.4~2.1배). 실제로
+        # 기체가 0.5 m/s 명령에 0.92 m/s로 달렸다. 모델을 맞추면 왕복이 정확해진다.
+        self.declare_parameter("thruster_model", "t200_table")
+        self.declare_parameter("gazebo_linear_half_range_n", 50.0)
 
         # ── 안전 (obs_node와 같은 이름/의미를 승계한다) ──
         self.declare_parameter("send_pwm", False)
@@ -109,6 +121,15 @@ class BaseNode(Node):
                 "현재는 'mavlink_ekf'만 지원한다 — DVL 직결은 축 부호 변환 "
                 "확정 후 _read_state()에 추가할 것"
             )
+
+        self._thruster_model = str(p("thruster_model").value)
+        if self._thruster_model not in ("t200_table", "gazebo_linear"):
+            raise ValueError(
+                f"thruster_model={self._thruster_model!r} — "
+                "'t200_table'(실기) 또는 'gazebo_linear'(Edo SITL)여야 한다")
+        self._gz_half_range = float(p("gazebo_linear_half_range_n").value)
+        if self._gz_half_range <= 0.0:
+            raise ValueError("gazebo_linear_half_range_n은 양수여야 한다")
 
         pos, dir_ = thruster_pos_dir_ned(load_brov2_yaml())
         self._thruster = BROV2ThrusterModel(
@@ -159,9 +180,12 @@ class BaseNode(Node):
 
         period = 1.0 / float(p("state_rate_hz").value)
         self.create_timer(period, self._tick)
+        limits = (f"선형 ±{self._gz_half_range:.1f} N"
+                  if self._thruster_model == "gazebo_linear"
+                  else f"T200 테이블 {self._thruster.force_limits_n}")
         self.get_logger().info(
             f"base_node 시작 — send_pwm={self._send_pwm} arm={self._arm_permitted} "
-            f"watchdog={self._cmd_timeout:.3f}s"
+            f"watchdog={self._cmd_timeout:.3f}s, 추진기 {self._thruster_model} ({limits})"
         )
 
     # ------------------------------------------------------------------ 상태
@@ -232,8 +256,14 @@ class BaseNode(Node):
             self._trip("wrench에 NaN/Inf")
             return
 
-        desired = self._thruster.clamp_thrust(self._B_pinv @ w)
-        pwm = self._thruster.inverse_thrust(desired).reshape(-1).clamp(-1.0, 1.0)
+        desired = self._B_pinv @ w
+        if self._thruster_model == "gazebo_linear":
+            # ardupilot_gazebo의 선형 법칙을 그대로 역으로 쓴다 — 왕복이 항등이다.
+            desired = desired.clamp(-self._gz_half_range, self._gz_half_range)
+            pwm = (desired / self._gz_half_range).reshape(-1).clamp(-1.0, 1.0)
+        else:
+            desired = self._thruster.clamp_thrust(desired)
+            pwm = self._thruster.inverse_thrust(desired).reshape(-1).clamp(-1.0, 1.0)
 
         if bool((pwm.abs() > self._max_pwm_abs).any()):
             self._trip(f"PWM이 max_pwm_abs {self._max_pwm_abs} 초과")

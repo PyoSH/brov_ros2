@@ -48,6 +48,10 @@ def generate_launch_description() -> LaunchDescription:
         # 0.3 m/s 명령에 1.4 m/s로 발산). identity는 udpin: 연결에서만 허용된다.
         DeclareLaunchArgument("thruster_reversal_profile", default_value="real_brov2",
                               choices=["real_brov2", "edo_sitl_identity"]),
+        # 액추에이터 모델. 실기는 T200 실측 테이블, Edo SITL은 ardupilot_gazebo의
+        # 선형 ±50 N이다. 틀리면 왕복이 항등이 아니라 요청의 1.4~2.1배가 나간다.
+        DeclareLaunchArgument("thruster_model", default_value="t200_table",
+                              choices=["t200_table", "gazebo_linear"]),
         DeclareLaunchArgument("policy_path", default_value=""),
         DeclareLaunchArgument("metadata_path", default_value=""),
         DeclareLaunchArgument("vehicle_model_path", default_value=""),
@@ -59,6 +63,10 @@ def generate_launch_description() -> LaunchDescription:
         # obs_node와 같은 기본값. "0,0,0;3,0,0"이 "기체 정면으로 3 m"를 뜻한다.
         DeclareLaunchArgument("waypoint_frame", default_value="start_heading",
                               choices=["start_heading", "ned"]),
+        # loop=false면 마지막 waypoint에서 terminal hold로 넘어간다. 순항 성능을
+        # 재려면 정본 미션처럼 true여야 한다.
+        DeclareLaunchArgument("loop", default_value="false",
+                              choices=["true", "false"]),
         # 추력을 내려면 둘 다 true여야 한다. 기본값은 안전한 쪽이다.
         DeclareLaunchArgument("send_pwm", default_value="false"),
         DeclareLaunchArgument("arm", default_value="false"),
@@ -73,6 +81,7 @@ def generate_launch_description() -> LaunchDescription:
             parameters=[{
                 "connection": cfg("connection"),
                 "thruster_reversal_profile": cfg("thruster_reversal_profile"),
+                "thruster_model": cfg("thruster_model"),
                 "send_pwm": cfg("send_pwm"),
                 "arm": cfg("arm"),
                 "state_rate_hz": cfg("state_rate_hz"),
@@ -89,6 +98,7 @@ def generate_launch_description() -> LaunchDescription:
                 "lookahead_dist": cfg("lookahead_dist"),
                 "reach_threshold": cfg("reach_threshold"),
                 "waypoint_frame": cfg("waypoint_frame"),
+                "loop": cfg("loop"),
             }],
         ),
         Node(
