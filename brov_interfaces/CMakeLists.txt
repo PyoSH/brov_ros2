@@ -11,6 +11,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/AlignedOdometry.msg"
   "msg/BrovState.msg"
   "msg/DesiredState.msg"
+  "msg/DvlSample.msg"
   "msg/LocalizationStatus.msg"
   "msg/Observation.msg"
   "msg/OdometrySession.msg"

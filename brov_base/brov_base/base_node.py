@@ -264,6 +264,12 @@ class BaseNode(Node):
         msg.angular_velocity = Vector3(x=float(omega[0]), y=float(omega[1]), z=float(omega[2]))
         msg.attitude_age_s = float(snap["att_age_s"])
         msg.position_age_s = float(snap["pos_age_s"])
+        # DVL 기록기를 붙였을 때 EKF 융합이 끊기지 않았는지 보는 유일한 창이다.
+        # A50 의 TCP 서버가 단일 클라이언트만 받으면 기록기가 BlueOS 의 DVL
+        # extension 을 밀어내고, EKF 는 IMU dead reckoning 으로 조용히 떨어진다.
+        # 그 경우 이 값이 눈에 띄게 오른다. 미수신이면 -1.
+        _var = snap.get("ekf_vel_variance")
+        msg.ekf_velocity_variance = float(_var) if _var is not None else -1.0
 
         stale = []
         if snap["att_age_s"] > self._att_max_age:

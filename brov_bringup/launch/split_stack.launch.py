@@ -48,7 +48,8 @@ arm 과 start 를 나눠 둔 이유: 합치면 원점이 "추진기가 켜진 �
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch.actions import DeclareLaunchArgument, ExecuteProcess
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
@@ -102,6 +103,14 @@ def generate_launch_description() -> LaunchDescription:
         # 추력을 내려면 둘 다 true여야 한다. 기본값은 안전한 쪽이다.
         DeclareLaunchArgument("send_pwm", default_value="false"),
         DeclareLaunchArgument("arm", default_value="false"),
+        # 주행을 bag 으로 남긴다. dead time 측정(diag_loop_delay)이 이 bag 을
+        # 읽는다 -- /brov/cmd/wrench 와 /brov/state 가 같은 시계로 들어 있어야
+        # 명령->응답 교차상관을 낼 수 있다. 실기 주행마다 켜 두는 것을 권한다:
+        # 지연은 배포 구성(BlueOS 라우팅, 테더, ESC)마다 다르고 사후에 다시 잴
+        # 방법이 없다.
+        DeclareLaunchArgument("record_bag", default_value="false",
+                              choices=["true", "false"]),
+        DeclareLaunchArgument("bag_path", default_value="brov_run"),
         DeclareLaunchArgument("state_rate_hz", default_value="25.0"),
         DeclareLaunchArgument("wrench_command_timeout_s", default_value="0.25"),
     ]
@@ -148,6 +157,13 @@ def generate_launch_description() -> LaunchDescription:
                 "vehicle_model_path": cfg("vehicle_model_path"),
                 "expected_policy_dt_s": 0.04,
             }],
+        ),
+        ExecuteProcess(
+            condition=IfCondition(cfg("record_bag")),
+            cmd=["ros2", "bag", "record", "-o", cfg("bag_path"),
+                 "/brov/state", "/brov/cmd/wrench", "/brov/observation",
+                 "/brov/desired", "/brov/control_active"],
+            output="screen",
         ),
     ]
     return LaunchDescription(args + nodes)

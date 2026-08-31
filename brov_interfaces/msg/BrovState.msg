@@ -21,6 +21,14 @@ geometry_msgs/Vector3 angular_velocity   # body frame [rad/s]
 # 돌았는지가 결과 해석을 바꾸므로 wire에 싣는다.
 string velocity_source                   # "mavlink_ekf" | "dvl" | "gazebo_truth"
 
+# EKF3 의 속도 분산(EKF_STATUS_REPORT). 속도 값을 얼마나 믿을지의 척도다.
+# DVL 을 기록용으로 붙일 때 **EKF 쪽 융합이 끊기지 않았는지 확인하는 데** 쓴다 --
+# A50 의 TCP 서버가 단일 클라이언트만 받으면 우리 기록기가 BlueOS 의 DVL
+# extension 을 밀어낼 수 있고, 그러면 EKF 가 IMU dead reckoning 으로 떨어지며
+# 이 값이 눈에 띄게 오른다. 기록기를 붙이기 전후로 비교할 것.
+# 미수신이면 -1.
+float32 ekf_velocity_variance
+
 # 깊이(position.z)의 출처. 논문 5.2 는 Bar30 압력센서로 깊이를 직접 측정하고
 # EKF 를 거치지 않는다. 2026-08-29 SITL 에서 LOCAL_POSITION_NED.z 가 초기값에
 # 얼어붙어(기체가 5.8 m 상승해도 ±0.1 m 로 보고) guidance 의 수직 되먹임이

@@ -41,6 +41,7 @@ setup(
             "guidance_node = brov_base.guidance_node:main",
             "observation_node = brov_base.observation_node:main",
             "diag_thruster_map = brov_base.diag_thruster_map:main",
+            "diag_loop_delay = brov_base.diag_loop_delay:main",
         ],
     },
 )
