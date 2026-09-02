@@ -728,3 +728,79 @@ SITL 은 후자였다(mavproxy 경유 r = 0.487, 직결 0.934). 실기도 BlueOS
 - **`depth_source:=pressure` 를 게이트 없이 사용** — 근거 없이 기본 동작 변경
 - **5 m 사각 / Fig.4 (b)(c)** — 수조에 안 들어감
 - **dead time 반영 정책 시험** — 아직 존재하지 않음. 이번 측정 후에 만든다
+
+
+---
+
+# 3차 세션 (계획, 2026-09-02 작성) — delayA 실기 검증 + 지연 분해
+
+한 세션에서 둘 다 한다. 준비는 **pull + 전체 재빌드**뿐이다 (`brov_interfaces`
+는 안 바뀌었으나 `brov_base`/`brov_bringup`/`brov_control` 코드가 바뀌었다).
+
+## 3차-A. delayA 정책 검증 (주 목적)
+
+**배경.** 2 Hz 진동의 근본원인(dead time 80 ms + 포화 relay)에 대한 학습 측
+대응. 행동 지연 40~80 ms 를 랜덤화해 재학습한 정책이며 **관측 계약은 16-D v2
+그대로라 배포측 변경이 없다.** IsaacLab gate 와 SITL 폐루프(양 경로) 모두에서
+relay cycle 소멸·포화 0% 를 확인했다 — 남은 것은 실기뿐이다.
+근거: OceanRL_test `step_2_BROV/DELAY_TRAINING_PLAN.md` §5, §5-11.
+
+**절차.** 2026-09-02 A1 과 **똑같이** 돌리되 번들만 바꾼다:
+
+```
+policy_path:=<저장소>/artifacts/policies/sim2swim_delayA_wa0017_mk2_s42_i299/policy_raw_flu_mk2.pt
+```
+
+(pool_demo_a `wrench_gain:=1.0`, start_heading, leg/rise/속도 그대로, bag on.)
+가능하면 같은 자리에서 baseline(fixplant)도 1회 — 같은 날 짝 비교가 표를
+만든다.
+
+**판정 (수용 기준 3, A1 실측 대비):**
+
+| 지표 | A1 baseline (2026-09-02) | 목표 |
+|---|---|---|
+| sway 1.8~2.6 Hz 명령 대역 | 21.1 N | **< 5 N** |
+| 전진 속도 (목표 0.25) | 0.14 m/s | **≥ 0.2 m/s** |
+| 행동 포화 (surge) | 73% | **< 10%** |
+
+**사전 등록 예측** (빗나가면 그대로 보고할 것):
+1. relay cycle 소멸 — 포화 급감, |ω| 급감 (SITL 재현 근거).
+2. 실기 링크는 r=0.809 로 SITL 직결(0.934)에 가깝다 → SITL mavproxy 에서 본
+   sway 잔존(jitter 가진)은 **없거나 작을 것**. 크게 나오면 실기 jitter 가
+   생각보다 크다는 뜻 — jitter DR 재학습 근거가 된다.
+3. 2026-09-02 에 leg 1.0 m 가 만들던 다리 미안착은 정책과 무관하므로 남을 수
+   있다 — 진동 판정과 분리해서 볼 것.
+
+## 3차-B. 지연 분해 M1~M4 (부 목적, 15분)
+
+배선은 끝나 있다 (`docs/LATENCY_DECOMPOSITION_PLAN.md` §3). 절차:
+
+```bash
+# M1 — 네트워크 하한 (스택 불필요)
+ping -c 50 192.168.2.2
+
+# M2 — MAVLink 왕복 (스택 불필요; 스택과 동시 실행 금지 — endpoint 경쟁)
+ros2 run brov_base diag_link_rtt --rounds 50
+
+# M3/M4 — A2-yaw 재실행 (2026-09-02 프로토콜 그대로, servo 가 bag 에 추가됨)
+ros2 launch brov_bringup deadtime_test.launch.py axis:=yaw bias:=1.0 \
+    amplitude:=0.5 duration_s:=40 record_bag:=true bag_path:=<경로>/a2_yaw_m4
+#   (chirp 도 1회: waveform:=chirp — jitter 상한)
+
+ros2 run brov_base diag_loop_delay <bag> --mode m3    # 명령→서보 (도착 시계)
+ros2 run brov_base diag_loop_delay <bag> --mode m4    # 서보→자이로 (FC 시계) ★핵심
+#   주의: m4 주행 중 QGC/Cockpit 접속 금지 — GCS streamrate 가 servo 스트림을
+#   저속으로 덮어쓸 수 있다 (mavproxy 에서 실측). 저속이면 도구가 경고한다.
+```
+
+**판정표** 는 `LATENCY_DECOMPOSITION_PLAN.md` §5: M4 ≥ 40 ms 면 RC_SPEED 후보,
+M2 ≥ 30 ms 면 온보드 이전 후보. **어느 쪽이든 M4 값이 학습 주입값을 갱신한다**
+(`τ_주입 = τ_total − M4`; 지금 60 ms 는 추진기 모델 21 ms 를 뺀 추정치다).
+
+## 가져올 것 (3차)
+
+```
+delayA 주행 bag (+가능하면 같은 날 baseline bag)
+a1_band.py 출력 (A1 표와 같은 형식)
+M1/M2 출력, a2_yaw_m4 bag, m3/m4 출력
+```

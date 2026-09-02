@@ -172,6 +172,10 @@ class RealRobotInterface:
         self._pos_seq = 0
         self._servo_output_us = None
         self._last_servo_time = 0.0
+        # SERVO_OUTPUT_RAW.time_usec = FC boot 시계 [µs]. dead time 분해(M4)가
+        # 이 시계로 servo↔gyro 를 교차상관한다 -- 링크가 전혀 안 낀다.
+        self._servo_time_usec = None
+        self._servo_seq = 0
         self._armed = None
         self._custom_mode = None
         self._heartbeat_system = None
@@ -311,6 +315,20 @@ class RealRobotInterface:
                     mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
                     msg_id, interval, 0, 0, 0, 0, 0,
                 )
+            # SERVO_OUTPUT_RAW 는 SET_MESSAGE_INTERVAL 이 무시되는 펌웨어가
+            # 있다 -- 2026-09-02 SITL 에서 25 Hz 를 요청했는데 4~7 Hz 로 왔고,
+            # 그 간격(250 ms)으로는 M4 지연 분해가 불가능하다. deprecated 지만
+            # ArduPilot 이 링크별로 확실히 존중하는 REQUEST_DATA_STREAM 으로
+            # RC_CHANNELS 그룹(SERVO_OUTPUT_RAW 포함)을 병행 요청한다.
+            # 주의: 이 블록 전체가 이미 _tx_lock 안이다 -- 여기서 다시 잡으면
+            # 데드락이다 (실제로 그렇게 base_node 가 heartbeat 직후 멈췄었다).
+            self._master.mav.request_data_stream_send(
+                self._master.target_system,
+                self._master.target_component,
+                mavutil.mavlink.MAV_DATA_STREAM_RC_CHANNELS,
+                int(self._telem_rate_hz), 1,
+            )
+
 
     def _recv_loop(self) -> None:
         """이 프로세스에서 `self._master`를 읽는 유일한 지점 — arm()/param 조회 등
@@ -387,6 +405,10 @@ class RealRobotInterface:
                         [getattr(msg, f"servo{i}_raw") for i in range(1, 9)],
                         dtype=torch.int32,
                     )
+                    # FC boot 시계 원본을 보존한다 (M4 분해용). FC 재부팅 시
+                    # 되감기지만, 한 주행 안에서의 교차상관에는 단조면 충분하다.
+                    self._servo_time_usec = int(getattr(msg, "time_usec", 0))
+                    self._servo_seq += 1
                     self._last_servo_time = now
                 elif t == "HEARTBEAT":
                     if (msg.get_srcSystem() == self._master.target_system
@@ -528,6 +550,8 @@ class RealRobotInterface:
                 "servo_output_us": (
                     None if self._servo_output_us is None else self._servo_output_us.clone()
                 ),
+                "servo_time_usec": self._servo_time_usec,
+                "servo_seq": self._servo_seq,
                 "servo_age_s": (
                     float("inf") if self._last_servo_time == 0.0
                     else time.monotonic() - self._last_servo_time

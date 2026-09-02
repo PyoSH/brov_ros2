@@ -86,6 +86,8 @@ _BAG_TOPICS = (
     "/brov/control_active",
     # 원시 센서. 지연이 어느 구간에서 생겼는지 사후에 좁힐 단서다.
     "/brov/sensor/ahrs",
+    # M3/M4 지연 분해용 — FC boot 시계 stamp (2026-09-02 배선)
+    "/brov/sensor/servo_out",
     "/brov/sensor/depth_ekf",
     "/brov/sensor/pressure0",
     "/brov/sensor/pressure1",

@@ -199,3 +199,124 @@ def test_closed_loop_comparison_uses_the_oscillation_band_when_mission_dominates
     assert "진동대 1~5 Hz" in out
     line = next(l for l in out.splitlines() if "실측 지배 주파수" in l)
     assert "2.3" in line and "일치" in line and "진동대" in line
+
+
+def test_xcorr_delay_recovers_known_fc_clock_lag():
+    """M4 핵심: FC 시계 위 두 신호의 알려진 지연을 되찾는가.
+
+    서보(사각파)와 자이로 각가속(같은 파형이 τ 늦게 + 잡음)을 FC 시계로 만들어
+    xcorr_delay 가 τ 를 격자 해상도(5 ms) 안에서 복원해야 한다. 두 신호의
+    표본율이 달라도(서보 25 Hz, 자이로 50 Hz) 성립해야 한다 — 실제 bag 이
+    그렇다.
+    """
+    from brov_base.diag_loop_delay import xcorr_delay
+
+    rng = np.random.default_rng(7)
+    tau = 0.045
+    t_sv = np.arange(0.0, 40.0, 1 / 25)          # 서보 25 Hz
+    t_gy = np.arange(0.0, 40.0, 1 / 50)          # 자이로 50 Hz
+    sq = lambda t: np.sign(np.sin(2 * np.pi * 1.0 * t))
+    sv = 1500 + 120 * sq(t_sv)
+    gy = 3.0 * sq(t_gy - tau) + rng.normal(0, 0.2, len(t_gy))
+
+    lag, r, _, _ = xcorr_delay(t_sv, sv, t_gy, gy)
+    assert abs(lag - tau) <= 0.005 + 1e-9, f"lag {lag*1000:.1f} ms (기대 45)"
+    assert r > 0.9, f"r={r:.3f}"
+
+
+def test_servo_out_carries_the_fc_clock_not_wall_clock():
+    """servo_out 의 header.stamp 는 FC boot 시계여야 하고, 같은 seq 는 재발행하지
+    않아야 한다.
+
+    M4 는 servo↔ahrs 의 header 끼리 교차상관한다. 벽시계가 섞이면 '링크 무관
+    측정'이라는 존재 이유가 사라진다.
+
+    **DDS 를 쓰지 않는다.** 구판은 구독으로 수신을 세었는데, 전체 스위트에서
+    discovery 타이밍에 따라 어긋났고, 실패가 rclpy context 누수(try/finally
+    부재)로 이어져 뒤 파일들의 rclpy.init() 을 전부 ERROR 로 만들었다.
+    publisher.publish 를 직접 캡처하면 결정론적이다.
+    """
+    import rclpy
+
+    from brov_base.base_node import BaseNode
+
+    class _Iface:
+        def __init__(self):
+            self.sent = []
+            self._servo_seq = 1
+
+        def bump(self):
+            self._servo_seq += 1
+
+        def snapshot(self):
+            import torch
+            return {
+                "att_quat_ned": torch.tensor([1.0, 0, 0, 0]),
+                "pos_ned": torch.zeros(3), "vel_ned": torch.zeros(3),
+                "body_rates_ned": torch.zeros(3),
+                "att_age_s": 0.01, "pos_age_s": 0.01,
+                "att_seq": 1, "pos_seq": 1,
+                "att_time_boot_ms": 123456,
+                "press_abs_hpa": [None, None, None],
+                "press_age_s": [float("inf")] * 3,
+                "press_seq": [0, 0, 0],
+                "ekf_vel_variance": None,
+            }
+
+        def control_snapshot(self):
+            import torch
+            return {
+                "heartbeat_age_s": 0.1, "custom_mode": 19, "armed": False,
+                "servo_output_us": torch.tensor(
+                    [1500, 1500, 1500, 1500, 1600, 1500, 1500, 1500],
+                    dtype=torch.int32),
+                "servo_time_usec": 123_456_789,   # FC boot 123.456789 s
+                "servo_seq": self._servo_seq,
+            }
+
+        def send_pwm(self, pwm): self.sent.append(pwm)
+        def neutral_stop(self): pass
+        def enable_passthrough(self): pass
+        def arm(self): pass
+        def disarm(self): pass
+        def close(self, send_stop=True): pass
+        def get_parameter(self, n, timeout=5.0): return None
+
+    we_inited = not rclpy.ok()
+    if we_inited:
+        rclpy.init()
+    node = None
+    try:
+        node = BaseNode(interface=_Iface())
+        node._publish_sensor_topics = True
+
+        class _CapturePub:
+            def __init__(self):
+                self.msgs = []
+
+            def publish(self, msg):
+                self.msgs.append(msg)
+
+        cap = _CapturePub()
+        node._pub_servo_out = cap
+        node._last_servo_seq = None
+
+        node._publish_sensor_sample(node._interface.snapshot())
+        assert len(cap.msgs) == 1, "servo_out 이 발행되지 않았다"
+        m = cap.msgs[-1]
+        fc = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+        assert abs(fc - 123.456789) < 1e-6, f"stamp 가 FC 시계가 아니다: {fc}"
+        assert list(m.position)[4] == 1600.0
+
+        # seq 를 올리지 않고 다시 = FC 가 새 표본을 안 준 상황 → 재발행 금지
+        node._publish_sensor_sample(node._interface.snapshot())
+        assert len(cap.msgs) == 1, "같은 servo_seq 를 중복 발행했다"
+
+        node._interface.bump()
+        node._publish_sensor_sample(node._interface.snapshot())
+        assert len(cap.msgs) == 2, "새 seq 인데 발행되지 않았다"
+    finally:
+        if node is not None:
+            node.destroy_node()
+        if we_inited:
+            rclpy.shutdown()

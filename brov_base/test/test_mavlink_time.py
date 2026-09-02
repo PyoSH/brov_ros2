@@ -339,6 +339,12 @@ class _StreamRequestRecorder:
                           p1, p2, *rest):
         self.sent.append((int(p1), int(p2)))
 
+    def request_data_stream_send(self, sysid, compid, stream_id, rate_hz, on):
+        # 2026-09-02 추가: SERVO_OUTPUT_RAW 가 SET_MESSAGE_INTERVAL 을 무시하는
+        # 경로(mavproxy streamrate)가 있어 RC_CHANNELS 스트림을 병행 요청한다.
+        self.streams = getattr(self, "streams", [])
+        self.streams.append((int(stream_id), int(rate_hz), int(on)))
+
 
 def _requested_intervals(telemetry_rate_hz=25.0, baro_rate_hz=10.0):
     from brov_base.mavlink_interface import RealRobotInterface
@@ -391,3 +397,21 @@ def test_baro_is_requested_slower_than_the_control_rate():
         intervals[mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE]
         > intervals[mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE_QUATERNION]
     )
+
+
+def test_rc_channels_stream_is_requested_at_the_control_rate():
+    """SERVO_OUTPUT_RAW 저속 함정 대비 — RC_CHANNELS 스트림 병행 요청.
+
+    SET_MESSAGE_INTERVAL 만으로는 mavproxy(기본 streamrate 4 Hz) 뒤에서 servo
+    가 250 ms 간격으로 와 M4 지연 분해가 불가능했다. REQUEST_DATA_STREAM 을
+    telemetry 주기로 함께 보내야 한다.
+    """
+    from pymavlink import mavutil
+
+    from brov_base.mavlink_interface import RealRobotInterface
+
+    interface = RealRobotInterface("udpin:0.0.0.0:14550", telemetry_rate_hz=25.0)
+    interface._master = _StreamRequestRecorder()
+    interface._request_telemetry_streams()
+    streams = getattr(interface._master, "streams", [])
+    assert (mavutil.mavlink.MAV_DATA_STREAM_RC_CHANNELS, 25, 1) in streams, streams

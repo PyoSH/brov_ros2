@@ -172,6 +172,120 @@ def read_bag(path: str):
             np.array(act_t), np.array(act_v, dtype=bool))
 
 
+def read_bag_fc(path: str):
+    """M3/M4 용 원시 신호를 뽑는다.
+
+    반환:
+      wrench:  (t_arrival, torque_z)
+      servo:   (t_arrival, t_fc, pwm[8])   -- t_fc = header.stamp (FC boot 시계)
+      gyro:    (t_arrival, t_fc, omega[3])
+    servo/ahrs 의 header.stamp 는 base_node 가 FC boot 시계로 찍는다
+    (SERVO_OUTPUT_RAW.time_usec / ATTITUDE.time_boot_ms). 같은 시계이므로 둘의
+    header 끼리 교차상관(M4)하면 링크 지연이 전혀 안 낀다.
+    """
+    from rclpy.serialization import deserialize_message
+    from rosidl_runtime_py.utilities import get_message
+
+    it = _iter_messages(path)
+    types = next(it)
+    need = ("/brov/cmd/wrench", "/brov/sensor/servo_out", "/brov/sensor/ahrs")
+    for topic in need:
+        if topic not in types:
+            raise SystemExit(
+                f"bag 에 {topic} 가 없다 (M3/M4 는 2026-09-02 servo 배선 이후의 "
+                f"bag 이 필요하다). 기록된 토픽: {sorted(types)}")
+
+    wr, sv, gy = [], [], []
+    for topic, data, stamp in it:
+        t = stamp * 1e-9
+        if topic == "/brov/cmd/wrench":
+            m = deserialize_message(data, get_message(types[topic]))
+            wr.append([t, m.torque.z])
+        elif topic == "/brov/sensor/servo_out":
+            m = deserialize_message(data, get_message(types[topic]))
+            hdr = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+            sv.append([t, hdr, *list(m.position)[:8]])
+        elif topic == "/brov/sensor/ahrs":
+            m = deserialize_message(data, get_message(types[topic]))
+            hdr = m.header.stamp.sec + m.header.stamp.nanosec * 1e-9
+            gy.append([t, hdr, m.angular_velocity.x, m.angular_velocity.y,
+                       m.angular_velocity.z])
+    return np.array(wr), np.array(sv), np.array(gy)
+
+
+def xcorr_delay(t_x, x, t_y, y, *, max_lag_s=0.30, grid_dt=0.005):
+    """y 가 x 보다 얼마나 늦는지 — 공통 격자 리샘플 후 교차상관.
+
+    반환 (lag_s, r, lags_s, r_profile). 단위시험이 이 함수를 직접 검증한다.
+    """
+    t0 = max(t_x[0], t_y[0])
+    t1 = min(t_x[-1], t_y[-1])
+    if t1 - t0 < 3.0:
+        raise SystemExit(f"공통 구간이 너무 짧다: {t1 - t0:.2f}s")
+    grid = np.arange(t0, t1, grid_dt)
+    xs = np.interp(grid, t_x, x); xs = xs - xs.mean()
+    ys = np.interp(grid, t_y, y); ys = ys - ys.mean()
+    lags = np.arange(0, int(round(max_lag_s / grid_dt)) + 1)
+    cc = []
+    for L in lags:
+        a = xs[: len(xs) - L] if L else xs
+        b = ys[L:]
+        cc.append(np.corrcoef(a, b)[0, 1] if len(a) > 10 else np.nan)
+    cc = np.array(cc)
+    best = int(np.nanargmax(np.abs(cc)))
+    return lags[best] * grid_dt, float(cc[best]), lags * grid_dt, cc
+
+
+def _pick_servo_channel(pwm):
+    """여기(excitation)를 실은 채널 = 분산 최대 채널."""
+    return int(np.argmax(pwm.std(axis=0)))
+
+
+def analyse_m3(wr, sv, skip_s=5.0):
+    """M3: 명령(wrench 도착) -> 서보 출력(도착). τ_up + τ_FC + τ_down."""
+    t0 = max(wr[0, 0], sv[0, 0]) + skip_s
+    w = wr[wr[:, 0] >= t0]
+    v = sv[sv[:, 0] >= t0]
+    ch = _pick_servo_channel(v[:, 2:10])
+    lag, r, lags, cc = xcorr_delay(w[:, 0], w[:, 1], v[:, 0], v[:, 2 + ch])
+    print(f"M3  명령→서보출력 도착   lag = {lag*1000:5.1f} ms,  r = {r:+.3f}"
+          f"   (채널 servo{ch+1}, n={len(w)}/{len(v)})")
+    for L, c in zip(lags[:: max(1, len(lags)//10)], cc[:: max(1, len(lags)//10)]):
+        print(f"    {L*1000:6.1f} ms : r = {c:+.3f}")
+    return lag, r
+
+
+def analyse_m4(sv, gy, skip_s=5.0):
+    """M4: 서보 출력 -> 자이로 각가속 — **FC 시계**. 링크가 전혀 안 낀다.
+
+    τ_actuator(+자이로 샘플링)의 확정 측정이다. 신호는 분산 최대 서보 채널과
+    yaw 각가속(자이로 z 미분) — A2-yaw 프로토콜(역전 없음)에 맞춘 선택이다.
+    """
+    t0f = max(sv[0, 1], gy[0, 1]) + skip_s
+    v = sv[sv[:, 1] >= t0f]
+    g = gy[gy[:, 1] >= t0f]
+    if np.any(np.diff(v[:, 1]) < 0) or np.any(np.diff(g[:, 1]) < 0):
+        print("  ** FC 시계 되감김 감지 — FC 재부팅이 낀 bag 이다. 구간을 나눠 볼 것. **")
+    dt_ms = float(np.median(np.diff(v[:, 1]))) * 1000.0
+    if dt_ms > 60.0:
+        print(f"  ** SERVO 스트림이 저속이다 ({dt_ms:.0f} ms 간격) — M4 분해능 "
+              f"±{dt_ms/2:.0f} ms 로 측정 불가. **")
+        print("     원인: 경로 위의 mavproxy/GCS 가 streamrate 를 덮어쓴 것 "
+              "(2026-09-02 SITL 에서 mavproxy 기본 4 Hz 로 확인). 실기에서는 "
+              "QGC/Cockpit 을 끊고 재시도할 것.")
+    ch = _pick_servo_channel(v[:, 2:10])
+    yaw_rate = g[:, 4]
+    yaw_acc = np.gradient(yaw_rate, g[:, 1])
+    lag, r, lags, cc = xcorr_delay(v[:, 1], v[:, 2 + ch], g[:, 1], yaw_acc)
+    print(f"M4  서보→자이로 (FC 시계)  lag = {lag*1000:5.1f} ms,  r = {r:+.3f}"
+          f"   (채널 servo{ch+1}, n={len(v)}/{len(g)})")
+    for L, c in zip(lags[:: max(1, len(lags)//10)], cc[:: max(1, len(lags)//10)]):
+        print(f"    {L*1000:6.1f} ms : r = {c:+.3f}")
+    print("  해석: 이 값이 τ_actuator. 학습 주입값 = τ_total − 이 값"
+          " (DELAY_TRAINING_PLAN §1-4).")
+    return lag, r
+
+
 def analyse(wr_t, wr_f, st_t, st_v, act_t, act_v, axis: str, m_eff: float,
             control_dt: float, skip_s: float, seconds: float | None = None,
             open_loop: bool = False):
@@ -320,12 +434,24 @@ def main() -> None:
                     help="skip 이후 사용할 길이 [s]. deadtime_test 의 duration_s "
                          "에서 --skip 을 뺀 값을 주면, 여기가 끝난 뒤의 "
                          "명령 0 구간이 r 을 희석하는 것을 막는다")
+    ap.add_argument("--mode", default="closed", choices=["closed", "m3", "m4"],
+                    help="closed=기존 명령→가속 분석. m3=명령→서보출력(도착 시계), "
+                         "m4=서보→자이로(FC 시계, 링크 무관) — 지연 분해용 "
+                         "(LATENCY_DECOMPOSITION_PLAN.md)")
     ap.add_argument("--open-loop", action="store_true",
                     help="주입한 여기로 잰 주행. 폐루프 진동 전제의 비교를 끄고 "
                          "대신 여기 대역폭이 정하는 지연 분해능을 보고한다")
     args = ap.parse_args()
 
     m_eff = args.m_eff if args.m_eff is not None else _M_EFF[args.axis]
+    if args.mode in ("m3", "m4"):
+        print(f"=== 지연 분해 {args.mode.upper()}   bag={args.bag}")
+        wr, sv, gy = read_bag_fc(args.bag)
+        if args.mode == "m3":
+            analyse_m3(wr, sv, skip_s=args.skip)
+        else:
+            analyse_m4(sv, gy, skip_s=args.skip)
+        return
     print(f"=== dead time 진단   bag={args.bag}   축={args.axis}")
     data = read_bag(args.bag)
     analyse(*data, axis=args.axis, m_eff=m_eff,

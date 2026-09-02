@@ -88,7 +88,29 @@ pymavlink 로 `TIMESYNC`(tc1=0) 를 보내면 ArduPilot 이 응답한다 — 왕
 `τ_total(80) ≈ M2 + M4 + (FC 스케줄+양자화 잔차)` 가 맞는지 본다. 잔차가
 20 ms 를 넘으면 모형에 빠진 구간이 있다는 뜻이므로 그것부터 찾는다.
 
-## 3. 준비 배선 (실기 가기 전, 코드 작업)
+## 3. 준비 배선 — **구현 완료 (2026-09-02)**
+
+| 작업 | 상태 |
+|---|---|
+| `/brov/sensor/servo_out` (JointState, **stamp = FC boot 시계** `time_usec`) | `base_node` — seq 변화 시에만 발행 |
+| `/brov/sensor/ahrs` stamp 를 FC boot 시계(`time_boot_ms`)로 | 도착 시각은 bag 기록 시각에 보존 |
+| `deadtime_test` bag 목록에 servo 추가 | 완료 |
+| `diag_loop_delay --mode m3/m4` | m3=명령→서보(도착 시계), m4=서보→자이로(**FC 시계**, 링크 무관). 핵심 수학 `xcorr_delay` 는 합성 시험으로 검증 |
+| M2 유틸 | `ros2 run brov_base diag_link_rtt` (TIMESYNC, param 폴백, pymavlink 단독) |
+| 시험 | `test_diag_loop_delay` 18개 (지연 복원·FC stamp 계약·중복 발행 금지 포함) |
+
+**SITL null 검증 (2026-09-02, 직결):** M4 = **0 ms** (SITL 액추에이터는
+gazebo_linear 즉시형이므로 0 이 정답 — 도구가 참을 잰다는 검증),
+M3 = 50 ms (r=0.998). M3+M4 ≈ 직결 τ_total 실측 60 ms 로 산술이 닫힌다.
+
+**함정 (실기 주의):** mavproxy 경유에서는 servo 스트림이 4 Hz 로 강제됐다
+(mavproxy 기본 streamrate 가 우리의 25 Hz 요청을 덮어씀) — M4 불가.
+`--mode m4` 가 저속이면 경고한다. 실기에서 BlueOS 에 QGC/Cockpit 이 붙어
+있으면 같은 간섭이 가능하므로 **M4 주행 중에는 GCS 를 끊을 것.**
+
+원판 계획표는 아래에 남긴다.
+
+### (원판) 준비 배선 목록
 
 | 작업 | 내용 |
 |---|---|

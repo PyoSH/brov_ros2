@@ -31,7 +31,9 @@
     /brov/odometry/local_with_session  OdometrySession — 마커(pool) 정렬 입력
     /brov/odometry/local               Odometry (진단용)
     /brov/odometry/session_id          String (latched)
-    /brov/sensor/ahrs                  Imu — 원시 자세·각속도
+    /brov/sensor/ahrs                  Imu — 원시 자세·각속도 (stamp = FC boot 시계)
+    /brov/sensor/servo_out             JointState — SERVO_OUTPUT_RAW 8ch PWM µs
+                                       (stamp = FC boot 시계)
     /brov/sensor/depth_ekf             Float32 — EKF 수직 위치 [m, 아래가 +]
     /brov/sensor/pressure0..2          FluidPressure — baro instance 0/1/2 원시압
 
@@ -61,7 +63,7 @@ from rclpy.qos import (
     QoSProfile,
     ReliabilityPolicy,
 )
-from sensor_msgs.msg import FluidPressure, Imu
+from sensor_msgs.msg import FluidPressure, Imu, JointState
 from std_msgs.msg import Bool, Empty, Float32, String
 from std_srvs.srv import Trigger
 import torch
@@ -305,6 +307,7 @@ class BaseNode(Node):
             self._pub_odom_with_session = self.create_publisher(
                 OdometrySession, "/brov/odometry/local_with_session", 10)
         self._pub_ahrs = None
+        self._pub_servo_out = None
         self._pub_depth_ekf = None
         self._pub_pressure = []
         if self._publish_sensor_topics:
@@ -322,6 +325,13 @@ class BaseNode(Node):
                     FluidPressure, f"/brov/sensor/pressure{i}", 10)
                 for i in range(3)
             ]
+            # dead time 분해(M4, LATENCY_DECOMPOSITION_PLAN.md)용. ahrs 와 함께
+            # **FC boot 시계 stamp** 로 나가므로, 두 토픽의 header 끼리 교차상관
+            # 하면 링크 지연이 전혀 안 낀 servo→gyro 순수 액추에이터 지연이 나온다.
+            # 도착 시각은 bag 기록 시각에 따로 남는다.
+            self._pub_servo_out = self.create_publisher(
+                JointState, "/brov/sensor/servo_out", 10)
+            self._last_servo_seq = None
 
         period = 1.0 / float(p("state_rate_hz").value)
         self.create_timer(period, self._tick)
@@ -549,7 +559,15 @@ class BaseNode(Node):
             q = snap["att_quat_ned"].reshape(4)
             omega = snap["body_rates_ned"].reshape(3)
             imu = Imu()
-            imu.header.stamp = stamp
+            # stamp = **FC boot 시계** (ATTITUDE.time_boot_ms). servo_out 과 같은
+            # 시계라 둘의 header 교차상관 = 링크 무관 M4 측정이 된다. 도착
+            # 시각은 bag 이 따로 기록한다. FC 재부팅 시 되감길 수 있다.
+            _tb = snap.get("att_time_boot_ms")
+            if _tb:
+                imu.header.stamp.sec = int(_tb // 1000)
+                imu.header.stamp.nanosec = int((_tb % 1000) * 1_000_000)
+            else:
+                imu.header.stamp = stamp
             # NED world -> FRD body. `/brov/state.attitude` 와 **같은 규약**이다 --
             # 여기서 몰래 변환하면 두 토픽을 나란히 놓고 볼 수 없다.
             imu.header.frame_id = self._base_frame
@@ -578,6 +596,21 @@ class BaseNode(Node):
             pressure.fluid_pressure = float(hpa) * 100.0     # hPa -> Pa
             pressure.variance = 0.0
             self._pub_pressure[i].publish(pressure)
+
+        ctrl = self._interface.control_snapshot()
+        servo_seq = None if ctrl is None else ctrl.get("servo_seq")
+        if (self._pub_servo_out is not None and servo_seq
+                and servo_seq != self._last_servo_seq
+                and ctrl.get("servo_output_us") is not None):
+            self._last_servo_seq = servo_seq
+            js = JointState()
+            tu = int(ctrl.get("servo_time_usec") or 0)
+            js.header.stamp.sec = tu // 1_000_000
+            js.header.stamp.nanosec = (tu % 1_000_000) * 1000
+            js.header.frame_id = self._base_frame
+            js.name = [f"servo{k}" for k in range(1, 9)]
+            js.position = [float(v) for v in ctrl["servo_output_us"].reshape(-1)]
+            self._pub_servo_out.publish(js)
 
     def _rx_summary(self) -> str:
         """지난 호출 이후 늘어난 MAVLink 메시지 타입별 개수."""
