@@ -1,5 +1,8 @@
 # 실기 dead time 80 ms 분해 계획 (2026-09-02 작성)
 
+> **측정 완료 (2026-09-03). §3b/3c/3d 에 결과, 세션 전체 요약은
+> [session_20260903_summary.md](session_20260903_summary.md).**
+
 2026-09-02 수조 세션이 **τ = 80 ms (A2-yaw, r=0.809)** 를 확정했다
 (`deadtime_result_to_training.md` §2). 이 문서는 그 80 ms 를 **구간별로 쪼개는
 실기 측정 계획**이다. 쪼개야 하는 이유는 둘이다.
@@ -124,6 +127,134 @@ M3 = 50 ms (r=0.998). M3+M4 ≈ 직결 τ_total 실측 60 ms 로 산술이 닫�
 기존 `mavlink_time.py` 의 boot time 추적(리셋 감지)이 있으므로 FC 시계 원본을
 보존만 하면 된다. 벽시계 매핑은 M4 에는 불필요하다.
 
+## 3b. 실측 결과 — M1/M2 (2026-09-03 00:56, 수조, 스택 미기동)
+
+`./runtime/m1m2_link.sh`. GCS(Cockpit/QGC) 닫은 상태, `check_ekf.sh` 통과
+(EKF flags 367, `POS_HORIZ_REL=1`).
+
+```
+M1  ping x50   손실 0%   min 3.442 / avg 5.682 / max 19.976 / mdev 3.456 ms
+M2  TIMESYNC   n=49      중앙 20.63  p10 19.10  p90 38.84  min 15.07  max 46.84 ms
+```
+
+| 구간 | 값 | 산출 |
+|---|---|---|
+| **τ_link (왕복)** | **20.6 ms** | M2 중앙 |
+| Fathom-X + RPi 네트워크 스택 | 5.7 ms (min 3.4) | M1 |
+| 라우터 + FC 수신처리 | **15.0 ms** | M2 − M1(avg) |
+| **잔여 예산** | **59.4 ms** | τ_total 80 − M2 |
+| 링크가 τ_total 에서 차지하는 몫 | **26 %** | |
+| 링크 jitter | p90−p10 **19.7 ms**, 전폭 31.8 ms | |
+
+**해석 셋.**
+
+1. **링크는 지배적이지 않다.** 판정표(§5)의 "M2 ≥ 30 ms → 온보드 이전" 문턱에
+   미달한다(20.6). 제어 스택을 로봇으로 옮겨도 80 ms 중 최대 20.6 ms 만 줄고,
+   그나마 loopback 도 0 은 아니다. **온보드 이전은 지금 우선순위가 아니다.**
+2. **순수 전송은 작고, 라우터+FC 수신처리가 그 3 배다** (5.7 vs 15.0 ms). 링크를
+   줄이려면 테더가 아니라 **mavlink-router 교체**(MAVLinkServer/MAVP2P)가 대상이다.
+   단 이득 상한이 15 ms 라 §5 의 "잔차 지배" 항목과 함께 판단할 것.
+3. **jitter 의 출처가 하나 잡혔다.** 링크 RTT 가 15~47 ms 로 흔들린다(p90−p10
+   19.7 ms). A2-yaw 의 교차상관 r 이 1.0 이 아니라 0.809 였던 것,
+   `attitude_age_s` 의 15 % 가 40~50 ms 였던 것과 같은 계열이다. 학습에 지연을
+   **고정값이 아니라 분포**로 주입해야 할 근거가 여기서 나온다 —
+   `deadtime_result_to_training.md` §6 의 "1~3 스텝 랜덤" 이 이 폭과 부합한다.
+
+**남은 59.4 ms 가 어디인지는 M4 가 답한다.** 판정표의 "M4 ≥ 40 ms → RC_SPEED
+200→400 Hz" 가 유력한 분기다 — 그렇다면 대응은 링크가 아니라 액추에이터 쪽이다.
+
+---
+
+## 3c. 실측 결과 — M3/M4 와 예산 마감 (2026-09-03 01:21)
+
+A2-yaw 재실행(`runtime/a2_yaw.sh`, bias 1.0 ± 0.5 N·m, 1 Hz, 40 s, servo 토픽 포함).
+bag `a2_yaw-20260903-012136`.
+
+```
+M3  명령→서보출력 도착   lag = 85.0 ms,  r = +0.950   (servo2, n=1545/1457)
+M4  서보→자이로 (FC 시계) lag =  0.0 ms,  r = +0.325   (프로파일이 0 에서 단조 감소)
+τ_total (명령→가속도)     lag = 80.0 ms,  r = +0.809   (2026-09-02 재현: 동일)
+```
+
+**정합성 검사 통과.** `M3 + M4 = 85 ms` vs `τ_total 80 ms` — 차 5 ms (6 %).
+SITL null 검증(M3 50 + M4 0 ≈ 60)과 같은 방식으로 산술이 닫힌다.
+
+### 예산 마감
+
+| 구간 | 값 | τ_total 대비 | 방법 |
+|---|---|---|---|
+| 링크 왕복 (테더+라우터) | **20.6 ms** | 26 % | M2 TIMESYNC |
+| **FC 내부 + telemetry 생성** | **64.4 ms** | **80 %** | M3 − M2 |
+| 액추에이터 + 자이로 | **~0 ms** (< 20 ms 분해능) | ~0 % | M4, FC 시계 |
+| 합 (M3+M4) | 85 ms | — | vs τ_total 80 |
+
+스트림 주기는 도착·FC 시계 모두 정확히 **25.0 Hz (40.0 ms)** 였다 — 요청대로
+왔고 GCS 간섭도 없었다. 따라서 telemetry 양자화 몫은 평균 ~20 ms 이고, 나머지
+**~44 ms 가 FC 수신→override 적용→서보 출력 경로**다.
+
+### 판정 — §5 표에서 갈라진 곳
+
+| 문턱 | 실측 | 결론 |
+|---|---|---|
+| M4 ≥ 40 ms (액추에이터 지배) | **0 ms** | **미해당 — `RC_SPEED` 400 Hz A/B 불필요.** 벤치 시험을 하지 않아도 된다 |
+| M2 ≥ 30 ms (링크 지배) | 20.6 ms | 미해당 — 온보드 이전 이득 상한 20.6 ms, 우선순위 낮음 |
+| **잔차 지배** | **64.4 ms (80 %)** | **해당.** telemetry 주기 상향 + 라우터 교체가 유일하게 큰 몫 |
+
+**"80 ms 는 통신·처리 경로 자체" 의 정정.** 2026-09-02 결과 문서 §2-2 는 A2-yaw
+가 역전·EKF 를 뺐다는 이유로 80 ms 를 통신 경로에 귀속했다. M2/M3/M4 는 그것을
+더 쪼갠다: **테더·라우터는 26 % 뿐이고, ESC·추진기는 0 이며, 80 % 가 FC 내부와
+telemetry 생성이다.** ESC 소신호 응답이 수십 ms 일 것이라는 §0 의 우려는
+기각됐다 — bias 로 계속 도는 프로펠러의 소신호 응답은 측정 분해능(20 ms) 아래다.
+
+> M4 의 r = 0.325 는 낮다. 자이로 각가속도(각속도 미분)의 잡음과 1 Hz 협대역
+> 여기의 분해능 한계 때문이다. 봉우리가 0 에서 **단조 감소**하므로 "0 근처"
+> 라는 결론은 서지만, 정확히는 **τ_actuator < 20 ms** 로 읽어야 한다.
+
+### 3d. chirp 재측정 (01:31, `a2_chirp-20260903-013106`) — τ 확정
+
+같은 yaw 프로토콜에 여기만 chirp(0.5→8 Hz) 로 바꿔 40 s.
+
+| | 1 Hz 사각파 | **chirp 0.5→8 Hz** |
+|---|---|---|
+| 피크 lag | 80.0 ms | 80.0 ms |
+| 부그리드 보정 | 78.4 ms | **85.3 ms** |
+| r | +0.809 | **+0.833** |
+| 봉우리 **반폭** | 120 ms | **60 ms** |
+| 대비 (peak−min) | 1.17 | **1.30** |
+| lag 0 ms 에서의 r | +0.743 | **−0.205** |
+
+**τ = 80~85 ms 는 실재하는 고정 지연이다.** 근거는 마지막 줄이다: 광대역 여기에서
+**lag 0 의 상관이 음수**(−0.205)로 나왔다 — 명령과 즉시 응답은 서로 **반대**라는
+뜻이고, 지연이 없다면 나올 수 없는 값이다. 사각파에서는 lag 0 에서도 +0.743 이라
+"봉우리인지 언덕인지" 구분이 안 됐다.
+
+부그리드 보정값 **85.3 ms** 는 M3(85.0 ms) + M4(0 ms) 와 **소수점까지 맞는다.**
+사각파의 78.4 ms 는 협대역 때문에 왼쪽으로 당겨진 값이다. 즉 τ_total 의 최선
+추정은 **85 ms** 이고, 예산은 다음과 같이 완전히 닫힌다:
+
+```
+τ_total 85.3 ms  =  링크 20.6 (M2)  +  FC 내부·telemetry 64.4  +  액추에이터 ~0 (M4)
+```
+
+jitter: r 이 0.833 까지밖에 안 오르는 잔여분(1−r² ≈ 31 %)이 고정 지연으로 설명되지
+않는 성분이다. M2 의 링크 jitter(p10 19.1 → p90 38.8 ms, 폭 19.7 ms)가 그 크기와
+부합한다. **학습 주입은 고정 85 ms 가 아니라 그 폭을 포함한 분포여야 한다.**
+
+> 도구도 이번에 고쳤다: 부그리드 포물선 보간, **실측 봉우리 반폭**, 광대역
+> 여기에서는 협대역 분해능 경고를 내지 않음. 시험 3 개 추가(실측 프로파일 사용).
+
+### 따라오는 것
+
+1. **telemetry 주기 상향** (§6b 보조 수단이 이제 1 순위): ATTITUDE 25 → 50 Hz.
+   되먹임 양자화가 평균 20 → 10 ms. `SET_MESSAGE_INTERVAL` 이 실제로 먹는지
+   (`/brov/request_streams` 응답의 수신 통계) 확인하며 적용하고 **A2-yaw 재측정**.
+2. **라우터 교체 A/B** (MAVLinkServer / MAVP2P): 남은 ~44 ms 중 얼마가 라우터
+   큐잉인지 가른다. BlueOS 에서 전환 가능.
+3. **RC_SPEED 는 건드리지 않는다** — M4 가 0 이므로 이득이 없다.
+4. 학습 주입값은 **80 ms 유지**. 위 1~2 로 줄면 그때 갱신한다.
+
+---
+
 ## 4. 실기 절차 (기존 A2-yaw 프로토콜 재사용)
 
 1. **M1/M2** — 스택 없이. ping 50회 + TIMESYNC/param 왕복 50회. 기록.
@@ -140,9 +271,9 @@ M3 = 50 ms (r=0.998). M3+M4 ≈ 직결 τ_total 실측 60 ms 로 산술이 닫�
 
 | 결과 | 대응 | 근거 |
 |---|---|---|
-| **M4 ≥ 40 ms** (액추에이터 지배) | `RC_SPEED` 200→400 Hz A/B. [ArduSub 파라미터](https://www.ardusub.com/developers/full-parameter-list.html) 범위 50~490 Hz. 포럼 실측 400 Hz→~25 ms | 온보드 이전 **불필요** — 링크를 줄여도 소용없다 |
-| **M2 ≥ 30 ms** (링크 지배) | 제어 스택 온보드 이전 검토. BlueOS 는 내부 프로그램용 loopback endpoint 를 지원: *"Bridges to internal programs can use the loopback IP `127.0.0.1`"* ([BlueOS docs](https://blueos.cloud/docs/latest/usage/advanced/)). 전례: [blueos-ros2 extension](https://github.com/itskalvik/blueos-ros2), [blue 프레임워크 RPi4 온보드 보고](https://github.com/Robotic-Decision-Making-Lab/blue/discussions/161) | RPi4 에서 정책 추론 25 Hz 가 도는지 먼저 확인 (TorchScript CPU 추론 벤치) |
-| **잔차 지배** (FC 스케줄/telemetry) | `SET_MESSAGE_INTERVAL` 간격 상향, 라우터 교체 시험(MAVLinkServer/MAVP2P — BlueOS 에서 전환 가능) | 문서에 지연 수치는 없다 — A/B 로만 판정 |
+| ~~**M4 ≥ 40 ms** (액추에이터 지배)~~ **[2026-09-03 미해당 — M4≈0]** | `RC_SPEED` 200→400 Hz A/B. [ArduSub 파라미터](https://www.ardusub.com/developers/full-parameter-list.html) 범위 50~490 Hz. 포럼 실측 400 Hz→~25 ms | 온보드 이전 **불필요** — 링크를 줄여도 소용없다 |
+| ~~**M2 ≥ 30 ms** (링크 지배)~~ **[2026-09-03 미해당 — M2=20.6]** | 제어 스택 온보드 이전 검토. BlueOS 는 내부 프로그램용 loopback endpoint 를 지원: *"Bridges to internal programs can use the loopback IP `127.0.0.1`"* ([BlueOS docs](https://blueos.cloud/docs/latest/usage/advanced/)). 전례: [blueos-ros2 extension](https://github.com/itskalvik/blueos-ros2), [blue 프레임워크 RPi4 온보드 보고](https://github.com/Robotic-Decision-Making-Lab/blue/discussions/161) | RPi4 에서 정책 추론 25 Hz 가 도는지 먼저 확인 (TorchScript CPU 추론 벤치) |
+| **잔차 지배** (FC 스케줄/telemetry) **← 2026-09-03 해당 (64.4 ms, 80 %)** | `SET_MESSAGE_INTERVAL` 간격 상향, 라우터 교체 시험(MAVLinkServer/MAVP2P — BlueOS 에서 전환 가능) | 문서에 지연 수치는 없다 — A/B 로만 판정 |
 | 어느 경우든 | **학습 지연 주입은 유지** — 잔여 τ 는 0 이 안 된다. 주입 범위만 분해 결과로 갱신 | `deadtime_result_to_training.md` §6 |
 
 ## 6. RC_SPEED 변경 시 주의 (조건부 항목)

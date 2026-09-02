@@ -286,3 +286,14 @@ def test_rise_lets_a_negatively_buoyant_vehicle_start_from_the_floor(monkeypatch
         _compose(module, frame="start_heading", rise_m="0.9")
     with pytest.raises(RuntimeError, match="rise_m"):
         _compose(module, frame="start_heading", rise_m="-0.1")
+
+
+def test_heading_mode_defaults_to_align_and_straight_is_available(monkeypatch):
+    """align 은 왕복마다 180° 선회를 강제한다. 그 회전이 DVL bottom lock 을
+    흔들어 EKF 위치를 수조 밖으로 밀어냈다(2026-09-03) — straight 로 끌 수 있어야
+    한다. 기본값은 바꾸지 않는다: 기존 주행과의 비교 가능성이 우선이다."""
+    module = _module(monkeypatch)
+    assert _defaults(module.generate_launch_description())["heading_mode"] == "align"
+    assert _included_arguments(_compose(module))["heading_mode"] == "align"
+    assert _included_arguments(
+        _compose(module, heading_mode="straight"))["heading_mode"] == "straight"

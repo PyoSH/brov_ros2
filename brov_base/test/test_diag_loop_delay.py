@@ -81,7 +81,8 @@ def test_jitter_lowers_correlation_for_broadband_input():
             analyse(t, wr_f, t, st_v, np.array([t[0]]), np.array([True]),
                     axis="heave", m_eff=28.1, control_dt=CONTROL_DT, skip_s=1.0)
         line = next(l for l in buf.getvalue().splitlines() if "피크 lag" in l)
-        return abs(float(line.split("r =")[1]))
+        # "피크 lag = X ms,  r = +0.9  (부그리드 보정 ...)" -- r 만 떼어낸다.
+        return abs(float(line.split("r =")[1].split("(")[0].strip()))
 
     r_clean = run(jitter=False)
     r_jitter = run(jitter=True)
@@ -320,3 +321,48 @@ def test_servo_out_carries_the_fc_clock_not_wall_clock():
             node.destroy_node()
         if we_inited:
             rclpy.shutdown()
+
+
+# ---------------------------------------------------------------- 봉우리 품질
+# 1 Hz 사각파는 봉우리가 ~250 ms 반폭으로 흐리고, chirp 은 뾰족하다. 그 차이를
+# 숫자로 내지 못하면 "80 ms" 가 얼마나 믿을 값인지 말할 수 없다 (2026-09-03).
+from brov_base.diag_loop_delay import peak_quality
+
+
+def test_peak_quality_refines_between_grid_points():
+    """격자 20 ms 인데 참값이 85 ms 면 포물선 보간이 그쪽으로 당겨야 한다."""
+    lags = np.arange(0, 8)
+    step = 0.020
+    true_tau = 0.085
+    cc = np.exp(-((lags * step - true_tau) / 0.04) ** 2)
+    q = peak_quality(cc, lags, step)
+    assert q["tau"] == pytest.approx(0.080)          # 격자 위 최댓값
+    assert abs(q["refined"] - true_tau) < 0.006      # 보간이 참값에 더 가깝다
+    assert abs(q["refined"] - true_tau) < abs(q["tau"] - true_tau)
+
+
+def test_sharp_peak_has_smaller_half_width_than_flat_one():
+    """chirp(뾰족) vs 사각파(평평) 를 반폭과 대비로 구분한다.
+
+    실측 프로파일을 그대로 쓴다 -- 2026-09-03 a2_yaw(사각파) 와 a2_chirp.
+    """
+    step = 0.020
+    square = np.array([0.743, 0.762, 0.780, 0.795, 0.809, 0.790, 0.706, 0.574,
+                       0.411, 0.246, 0.105, -0.016, -0.122, -0.214, -0.292, -0.361])
+    chirp = np.array([-0.205, -0.026, 0.271, 0.616, 0.833, 0.766, 0.483, 0.066,
+                      -0.305, -0.468, -0.465, -0.345, -0.210, -0.154, -0.141, -0.135])
+    lags = np.arange(len(square))
+    qs, qc = peak_quality(square, lags, step), peak_quality(chirp, lags, step)
+    assert qs["tau"] == pytest.approx(0.080) and qc["tau"] == pytest.approx(0.080)
+    assert qc["half_width"] < qs["half_width"], (
+        f"chirp 이 더 뾰족해야 한다: {qc['half_width']:.3f} vs {qs['half_width']:.3f}")
+    assert qc["contrast"] > qs["contrast"]
+
+
+def test_peak_quality_survives_a_peak_at_the_edge():
+    """M4 처럼 0 ms 에서 최대인 경우에도 죽지 않는다."""
+    lags = np.arange(0, 8); step = 0.020
+    cc = np.linspace(0.33, -0.21, len(lags))
+    q = peak_quality(cc, lags, step)
+    assert q["tau"] == pytest.approx(0.0)
+    assert q["refined"] == pytest.approx(0.0)

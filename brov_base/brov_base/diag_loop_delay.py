@@ -286,6 +286,49 @@ def analyse_m4(sv, gy, skip_s=5.0):
     return lag, r
 
 
+def peak_quality(cc, lags, step: float) -> dict:
+    """교차상관 봉우리의 **정밀도**를 낸다.
+
+    격자(step)보다 가는 위치는 세 점 포물선 보간으로 얻는다 -- 봉우리가 뾰족할수록
+    이 보정이 의미 있다. 반폭(peak 의 절반까지 내려가는 폭)은 "이 τ 를 몇 ms 까지
+    말할 수 있는가" 다: 넓으면 여기 대역폭이 부족한 것이고(1 Hz 사각파 ~250 ms),
+    좁으면 고정 지연이 실제로 그 자리에 있는 것이다(chirp).
+    """
+    best = int(np.nanargmax(np.abs(cc)))
+    peak = float(cc[best])
+    tau = lags[best] * step
+    refined = tau
+    if 0 < best < len(cc) - 1:
+        yl, y0, yr = float(cc[best - 1]), peak, float(cc[best + 1])
+        denom = yl - 2.0 * y0 + yr
+        if abs(denom) > 1e-9:
+            offset = 0.5 * (yl - yr) / denom
+            if abs(offset) <= 1.0:
+                refined = (lags[best] + offset) * step
+    # 반폭은 **대비로 정규화해서** 잰다. 1 Hz 사각파의 프로파일은 0.74~0.81 사이의
+    # 완만한 언덕이라 "peak 의 절반" 을 영영 안 지난다 -- 그러면 반폭이 정의되지
+    # 않아 비교를 못 한다. (cc − min)/(peak − min) 로 [0,1] 에 올린 뒤 0.5 를
+    # 지나는 곳을 찾으면 언덕이든 봉우리든 같은 자로 잴 수 있다.
+    lo = float(np.nanmin(cc))
+    contrast = peak - lo
+    if contrast <= 1e-9:
+        norm = np.zeros_like(cc, dtype=float)
+    else:
+        norm = (np.asarray(cc, dtype=float) - lo) / contrast
+    def edge(direction):
+        i = best
+        while 0 <= i + direction < len(cc):
+            i += direction
+            if norm[i] < 0.5:
+                return abs(i - best) * step
+        return float("nan")
+    left, right = edge(-1), edge(+1)
+    widths = [w for w in (left, right) if np.isfinite(w)]
+    return {"tau": tau, "refined": refined, "peak": peak, "best": best,
+            "half_width": float(np.mean(widths)) if widths else float("nan"),
+            "half_width_sides": (left, right), "contrast": contrast}
+
+
 def analyse(wr_t, wr_f, st_t, st_v, act_t, act_v, axis: str, m_eff: float,
             control_dt: float, skip_s: float, seconds: float | None = None,
             open_loop: bool = False):
@@ -342,8 +385,14 @@ def analyse(wr_t, wr_f, st_t, st_v, act_t, act_v, axis: str, m_eff: float,
     best = int(np.nanargmax(np.abs(cc)))
     tau = lags[best] * step
 
+    q = peak_quality(cc, lags, step)
     print(f"\ndead time (명령 -> 가속도 교차상관)")
-    print(f"  피크 lag = {tau*1000:5.1f} ms,  r = {cc[best]:+.3f}")
+    print(f"  피크 lag = {tau*1000:5.1f} ms,  r = {cc[best]:+.3f}"
+          f"   (부그리드 보정 {q['refined']*1000:5.1f} ms)")
+    hw = q["half_width"]
+    hw_txt = f"{hw*1000:5.1f} ms" if np.isfinite(hw) else "측정창 밖(>300 ms)"
+    print(f"  봉우리 반폭 {hw_txt},  대비(peak−min) {q['contrast']:.2f}"
+          f"   -- 반폭이 좁고 대비가 클수록 τ 가 그 자리에 실제로 있다")
     if abs(cc[best]) < 0.5:
         print("  ** r < 0.5: 고정 지연으로 설명되지 않는 성분이 크다(timing jitter). **")
         print("     평균 지연만 인용하면 오독한다. 라우팅 홉/버퍼링을 의심할 것.")
@@ -391,10 +440,14 @@ def analyse(wr_t, wr_f, st_t, st_v, act_t, act_v, axis: str, m_eff: float,
         # 개루프 여기 주행에서는 지배 주파수가 곧 **우리가 넣은 신호**다.
         # 아래 폐루프 비교를 그대로 인용하면 없는 불일치를 보고하게 된다.
         print("  (개루프 — 이 값은 주입한 여기의 주파수이지 폐루프 진동이 아니다)")
-        print(f"  지연 분해능의 한계: 여기가 {ff:.2f} Hz 협대역이면 교차상관 "
-              f"봉우리 반폭이 ~{1000 / (4 * ff):.0f} ms 다.")
-        print("  봉우리가 평평하면 jitter 이기 전에 **대역폭 부족**을 먼저 의심할 것 "
-              "— period_s 를 줄이거나 kind:=chirp 로 다시 잰다.")
+        if pf > 0.15:
+            print(f"  지연 분해능의 한계: 여기가 {ff:.2f} Hz 협대역(전력비 "
+                  f"{100*pf:.0f}%)이면 교차상관 봉우리 반폭이 ~{1000/(4*ff):.0f} ms 다.")
+            print("  봉우리가 평평하면 jitter 이기 전에 **대역폭 부족**을 먼저 의심할 것 "
+                  "— period_s 를 줄이거나 kind:=chirp 로 다시 잰다.")
+        else:
+            print(f"  여기가 광대역이다(지배 주파수 전력비 {100*pf:.1f}%) — chirp 계열. "
+                  "협대역 분해능 한계는 적용되지 않고, 위의 **실측 반폭**이 정밀도다.")
 
     # 위상 예산과 예측 진동 주파수
     print(f"\n위상 예산  ({'I_eff' if angular else 'm_eff'} = {m_eff:.3g} {unit_m}, "

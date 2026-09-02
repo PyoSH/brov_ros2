@@ -1,0 +1,16 @@
+M1/M2 링크 측정 — 2026-09-03 00:56, 수조, 스택 미기동, GCS 닫음
+check_ekf: EKF flags 367 (POS_HORIZ_REL=1, CONST_POS_MODE=0), LOCAL_POSITION_NED 흐름
+
+=== M1: ping x50 ===
+50 packets transmitted, 50 received, 0% packet loss, time 4945ms
+rtt min/avg/max/mdev = 3.442/5.682/19.976/3.456 ms
+
+=== M2: TIMESYNC x50 (udpout:192.168.2.2:14550) ===
+TIMESYNC RTT: n=49  중앙 20.63 ms  p10 19.10  p90 38.84  최소 15.07  최대 46.84
+
+=== 산출 ===
+라우터+FC 수신처리 = 20.63 - 5.68 = 14.95 ms
+잔여 예산          = 80 - 20.63   = 59.37 ms  (FC 스케줄/양자화 + M4 액추에이터)
+링크 몫            = 25.8 %
+링크 jitter        = p90-p10 19.74 ms, 전폭 31.77 ms
+판정표 M2>=30(링크 지배): 미해당

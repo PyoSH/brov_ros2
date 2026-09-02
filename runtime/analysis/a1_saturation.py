@@ -4,13 +4,18 @@ from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
 from brov_base.vendor.params import load_brov2_yaml, thruster_pos_dir_ned
 from brov_base.vendor.thruster import BROV2ThrusterModel, build_allocation_matrix
+import os
+_LIMIT = float(os.environ.get("A1_SECONDS", "0")) or None   # skip 이후 사용할 길이 [s]
+
 SCALE = np.array([85., 85., 120., 26., 14., 22.]); AXN = ["surge","sway","heave","roll","pitch","yaw"]
 cfg = load_brov2_yaml(); pos, dir_ = thruster_pos_dir_ned(cfg)
 tm = BROV2ThrusterModel(num_envs=1, dt=0.04, device="cpu", pos=pos, dir=dir_, voltage=14.8)
 B_pinv = torch.linalg.pinv(build_allocation_matrix(tm._pos, tm._dir)); lo, hi = tm.force_limits_n
 def window(path):
     wr_t, wr_f, st_t, st_v, act_t, act_v = read_bag(path)
-    t0 = act_t[act_v][0] + 5.0; t1 = min(wr_t[-1], st_t[-1]); return wr_t, wr_f, t0, t1
+    t0 = act_t[act_v][0] + 5.0; t1 = min(wr_t[-1], st_t[-1])
+    if _LIMIT: t1 = min(t1, t0 + _LIMIT)
+    return wr_t, wr_f, t0, t1
 def obs(path, t0, t1):
     it=_iter_messages(path); types=next(it); rows=[]
     for topic,data,stamp in it:
@@ -18,7 +23,12 @@ def obs(path, t0, t1):
             m=deserialize_message(data,get_message(types[topic])); t=stamp*1e-9
             if t0<=t<=t1 and m.valid and len(m.data)==16: rows.append(list(m.data))
     return np.array(rows)
-for label, path, gain in (("gain1.0", sys.argv[1], 1.0), ("gain0.5", sys.argv[2], 0.5)):
+# 정책 A/B 에서는 둘 다 gain 1.0 이다 -- 라벨과 gain 을 인자로 받는다.
+_L1 = sys.argv[5] if len(sys.argv) > 5 else "A(기준)"
+_L2 = sys.argv[6] if len(sys.argv) > 6 else "B(비교)"
+_G1 = float(sys.argv[7]) if len(sys.argv) > 7 else 1.0
+_G2 = float(sys.argv[8]) if len(sys.argv) > 8 else 0.5
+for label, path, gain in ((_L1, sys.argv[1], _G1), (_L2, sys.argv[2], _G2)):
     wr_t, wr_f, t0, t1 = window(path); m=(wr_t>=t0)&(wr_t<=t1); W=wr_f[m]
     print(f"\n=== {label}  ({m.sum()} 명령, {t1-t0:.0f}s) ===")
     print("(a) 행동 포화 |a|>=0.99  :", "  ".join(f"{AXN[i]} {100*np.mean(np.abs(W[:,i])>=0.99*SCALE[i]*gain):4.0f}%" for i in range(6)))

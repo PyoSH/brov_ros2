@@ -222,7 +222,7 @@ def _compose(context):
                 "cruise_speed": cfg("cruise_speed"),
                 # 실기 기본값: thruster_reversal_profile=real_brov2,
                 # thruster_model=t200_table.
-                "heading_mode": "align",
+                "heading_mode": cfg("heading_mode"),
                 "loop": "true",
                 # SITL Fig.4 (a) 와 같은 값. 바꾸면 그때 검증한 거동과 달라진다.
                 "lookahead_dist": "1.0",
@@ -391,6 +391,20 @@ def generate_launch_description() -> LaunchDescription:
                     "start_heading 전용. start 깊이에서 몇 m 띄워 주행할지 "
                     "(0~0.6). 바닥에서 시작하면 0.4 -- 정책이 0.4 m 올린 뒤 그 "
                     "깊이로 왕복한다. marker 프레임에서는 무시된다."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "heading_mode",
+                default_value="align",
+                choices=["align", "straight", "upright"],
+                description=(
+                    "align: 경로 방향으로 기수를 맞춘다 — 왕복마다 180° 선회가 "
+                    "강제된다. straight: start 순간의 yaw 를 고정한 채 앞뒤로 "
+                    "병진한다(선회 없음). 2026-09-03 실기에서 align 의 반복 선회가 "
+                    "|ω| RMS 를 0.9~1.7 rad/s 로 올렸고, A50 이 빔 3/4 로 도는 "
+                    "상태라 DVL bottom lock 이 흔들려 EKF 위치가 수조 밖으로 "
+                    "드리프트했다 — 지연/진동 실험은 straight 로 하는 편이 "
+                    "surge 축만 남아 깨끗하고 DVL 에도 쉽다."
                 ),
             ),
             DeclareLaunchArgument(

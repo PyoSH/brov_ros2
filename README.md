@@ -114,6 +114,10 @@ Ubuntu 22.04/ROS 2 Humble 환경의 fresh clone/build 절차, sim2sim 분해 실
 [docs/SIM2SIM_RETRAINING_HANDOFF.md](docs/SIM2SIM_RETRAINING_HANDOFF.md)에 기록한다.
 2026-09-02 실기 세션(dead time 80 ms, 이득 ½ 대조, 포화 limit cycle 판정)과 학습 쪽
 이관은 [docs/deadtime_result_to_training.md](docs/deadtime_result_to_training.md)에 있다.
+2026-09-03 세션(delayA 정책 배포 검증, 지연 분해 M1~M4·chirp로 τ=85 ms 확정)은
+[docs/session_20260903_summary.md](docs/session_20260903_summary.md)에 정리했다.
+질문별(무엇을 알려 했고 무엇을 알았나) 종합과 **wrapper 가 병목을 고착시켰을 가능성의 감사**는
+[docs/sim2real_findings_20260902-03.md](docs/sim2real_findings_20260902-03.md) 에 있다.
 
 ## Packages and executables
 
