@@ -112,11 +112,16 @@ class RealRobotInterface:
         thruster_rc_channels: list[int] | None = None,
         telemetry_rate_hz: float = 25.0,
         thruster_reversal_sign: list[float] | torch.Tensor | None = None,
+        baro_rate_hz: float = 10.0,
     ):
         self._conn_str = connection_string
         self._thr_channels = thruster_rc_channels or list(range(1, 9))   # 기본 RC ch1~8
         assert len(self._thr_channels) == 8, "스러스터는 8개 — RC 채널도 8개 필요"
         self._telem_rate_hz = telemetry_rate_hz
+        # 기압은 제어 주기만큼 빠를 필요가 없다. ArduSub 의 baro 갱신이 그보다
+        # 느리므로 더 높게 요청하면 같은 값이 중복으로 올 뿐이고, 그 중복이
+        # `/brov/sensor/pressureN` 을 채워 bag 을 거짓 갱신으로 부풀린다.
+        self._baro_rate_hz = baro_rate_hz
         self._thruster_reversal_sign = torch.as_tensor(
             _THRUSTER_REVERSAL_SIGN if thruster_reversal_sign is None
             else thruster_reversal_sign,
@@ -173,6 +178,11 @@ class RealRobotInterface:
         self._heartbeat_component = None
         self._last_heartbeat_time = 0.0
         self._param_values: dict[str, float] = {}
+        # 수신한 MAVLink 메시지 타입별 누적 개수. "telemetry 없음" 일 때 무엇이
+        # 오고 무엇이 안 오는지 즉시 말해 준다 -- heartbeat 만 오는 링크와 아예
+        # 죽은 링크는 조치가 다르다. 2026-09-02 실기에서 20 분을 이걸로 잃었다.
+        self._rx_counts: dict[str, int] = {}
+        self._last_command_ack: tuple[int, int] | None = None
 
         self._original_servo_functions: list[int] | None = None
         self._original_camera_rc_options: dict[int, int] | None = None
@@ -244,22 +254,62 @@ class RealRobotInterface:
             )
         self._last_gcs_heartbeat_tx = time.monotonic()
 
+    def request_telemetry_streams(self) -> None:
+        """스트림 요청을 다시 보낸다.
+
+        요청은 connect 직후 한 번만 나간다. 라우터가 아직 이 클라이언트를 등록하기
+        전이었거나, 다른 GCS(QGC, Cockpit)가 endpoint 를 가져갔다 놓았거나, FC 가
+        재부팅되면 스트림이 끊긴 채로 heartbeat 만 온다. 재실행 대신 이걸 부른다.
+        """
+        self._request_telemetry_streams()
+
+    def rx_counts(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._rx_counts)
+
+    def last_command_ack(self) -> tuple[int, int] | None:
+        with self._lock:
+            return self._last_command_ack
+
     def _request_telemetry_streams(self) -> None:
-        """정책에 필요한 MAVLink 메시지만 지정 주기로 요청한다."""
+        """정책에 필요한 MAVLink 메시지만 지정 주기로 요청한다.
+
+        SCALED_PRESSURE/2/3 도 **명시적으로 요청한다.** 수신 처리는 처음부터
+        있었지만 요청이 없어서, 기체가 이 endpoint 로 그것을 흘려주는지가
+        BlueOS/ArduSub 의 기본 스트림 설정(SRx_EXTRA3 등)에 달려 있었다.
+        안 오면 `depth_source:=pressure` 는 prepare 에서 거절되므로 위험하지는
+        않지만, 깊이 게이트(docs/REAL_ROBOT_SESSION.md 1단계) 자체를 못 한다 --
+        그리고 그 사실이 물에 들어간 뒤에야 드러난다.
+        """
         from pymavlink import mavutil
 
         interval_us = int(1e6 / self._telem_rate_hz)
-        with self._tx_lock:
+        baro_interval_us = int(1e6 / self._baro_rate_hz)
+        requests = [
+            (msg_id, interval_us)
             for msg_id in (
                 mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE_QUATERNION,
                 mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED,
                 mavutil.mavlink.MAVLINK_MSG_ID_EKF_STATUS_REPORT,
                 mavutil.mavlink.MAVLINK_MSG_ID_SERVO_OUTPUT_RAW,
-            ):
+            )
+        ]
+        # 셋 다 요청한다. 어느 instance 가 물속 센서인지는 probe 순서에 달렸고,
+        # BARO_PRIMARY 를 읽기 전에는 모른다.
+        requests += [
+            (msg_id, baro_interval_us)
+            for msg_id in (
+                mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE,
+                mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE2,
+                mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE3,
+            )
+        ]
+        with self._tx_lock:
+            for msg_id, interval in requests:
                 self._master.mav.command_long_send(
                     self._master.target_system, self._master.target_component,
                     mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL, 0,
-                    msg_id, interval_us, 0, 0, 0, 0, 0,
+                    msg_id, interval, 0, 0, 0, 0, 0,
                 )
 
     def _recv_loop(self) -> None:
@@ -279,6 +329,9 @@ class RealRobotInterface:
             t = msg.get_type()
             now = time.monotonic()
             with self._lock:
+                self._rx_counts[t] = self._rx_counts.get(t, 0) + 1
+                if t == "COMMAND_ACK":
+                    self._last_command_ack = (int(msg.command), int(msg.result))
                 if t == "ATTITUDE_QUATERNION":
                     boot_observation = self._observe_boot_time_locked(
                         "attitude", getattr(msg, "time_boot_ms", None), now

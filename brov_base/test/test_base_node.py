@@ -35,6 +35,13 @@ class _FakeInterface:
             "press_abs_hpa": [1013.25, 1028.0, None],
             "press_age_s": [0.01, 0.01, float("inf")],
             "press_seq": [1, 1, 0],
+            # 마커(pool) 정렬이 구독하는 odometry envelope 용. seq 는 링크가
+            # 실제로 새 샘플을 줬는지를 뜻한다 -- 올리지 않으면 재발행되지 않는다.
+            "odometry_session_id": "boot-a",
+            "att_rx_time": 100.0,
+            "pos_rx_time": 100.0,
+            "att_seq": 1,
+            "pos_seq": 1,
         }
         self.params = {"BARO_PRIMARY": 0.0, "BARO_SPEC_GRAV": 1.0}
 
@@ -45,6 +52,9 @@ class _FakeInterface:
     def neutral_stop(self): self.neutral_calls += 1
     def enable_passthrough(self): pass
     def get_parameter(self, name, timeout=5.0): return self.params.get(name)
+    def request_telemetry_streams(self): self.stream_requests = getattr(self, "stream_requests", 0) + 1
+    def rx_counts(self): return {"HEARTBEAT": 5, "ATTITUDE_QUATERNION": 0}
+    def last_command_ack(self): return (511, 0)
     def arm(self): self.armed = True
     def disarm(self): self.armed = False
     def close(self, send_stop=True): self.closed = True
@@ -437,3 +447,149 @@ def test_default_depth_source_is_still_ekf():
     node, iface = _node()
     msg = node._read_state()
     assert msg.depth_source == "mavlink_ekf" and msg.depth_baro_instance == -1
+
+
+# ---------------------------------------------------------------- odometry
+# 마커(pool) 정렬은 `/brov/odometry/local_with_session` 하나만 구독한다. 분리
+# 스택에서 그것을 내는 곳이 여기뿐이므로(MAVLink 를 두 프로세스가 열 수 없다),
+# 끊기면 절대 좌표 주행이 통째로 불가능해진다.
+def _captured(node):
+    captured = {}
+    for attr, key in (("_pub_odom_with_session", "envelope"),
+                      ("_pub_odom", "odometry"),
+                      ("_pub_odom_session", "session"),
+                      ("_pub_ahrs", "ahrs"),
+                      ("_pub_depth_ekf", "depth_ekf")):
+        publisher = getattr(node, attr)
+        captured[key] = []
+        publisher.publish = captured[key].append
+    captured["pressure"] = [[], [], []]
+    for i, publisher in enumerate(node._pub_pressure):
+        publisher.publish = captured["pressure"][i].append
+    return captured
+
+
+def test_odometry_envelope_carries_the_session_pool_alignment_needs():
+    node, _ = _node()
+    captured = _captured(node)
+    node._tick()
+    assert len(captured["envelope"]) == 1
+    envelope = captured["envelope"][0]
+    assert envelope.odometry_session_id == "boot-a:nav0"
+    assert envelope.odometry.header.frame_id == "odom"
+    assert envelope.odometry.child_frame_id == "base_link"
+    # 새 telemetry 가 없으면 재발행하지 않는다 -- 같은 샘플을 두 번 세면
+    # pool_alignment 의 "정지 상태 20 표본" 조건이 가짜로 채워진다.
+    node._tick()
+    assert len(captured["envelope"]) == 1
+    # session id 는 latched 로 한 번만 낸다.
+    assert len(captured["session"]) == 1
+
+
+def test_odometry_converts_ned_to_the_zup_frame_alignment_expects():
+    """NED -> odom(Z-up)이 실제로 일어난다. 부호가 살아 있으면 정렬이 뒤집힌다."""
+    node, iface = _node()
+    iface._snap["pos_ned"] = torch.tensor([1.0, 2.0, 3.0])
+    captured = _captured(node)
+    node._tick()
+    assert captured["odometry"], "새 세션의 첫 샘플은 발행돼야 한다"
+    position = captured["odometry"][0].pose.pose.position
+    assert (position.x, position.y, position.z) == (1.0, -2.0, -3.0)
+
+
+def test_position_jump_advances_the_session_so_alignment_invalidates():
+    """EKF 원점 리셋은 boot time 을 바꾸지 않는다. 인접 샘플 검사가 유일한 창이다."""
+    node, iface = _node()
+    captured = _captured(node)
+    node._tick()
+    assert captured["envelope"][0].odometry_session_id == "boot-a:nav0"
+    iface._snap["pos_ned"] = torch.tensor([0.0, 0.0, 5.0])
+    iface._snap["att_rx_time"] = 100.1
+    iface._snap["pos_rx_time"] = 100.1
+    iface._snap["pos_seq"] = 2
+    node._tick()
+    assert captured["envelope"][1].odometry_session_id == "boot-a:nav1"
+    # fault 를 latch 하지는 않는다 -- start_heading 주행은 절대 프레임에
+    # 의존하지 않으므로 계속 돌아야 한다.
+    assert not node._faulted
+
+
+def test_odometry_is_not_published_without_a_session_id():
+    node, iface = _node()
+    iface._snap["odometry_session_id"] = ""
+    captured = _captured(node)
+    node._tick()
+    assert captured["envelope"] == []
+
+
+# ------------------------------------------------------------------ 센서
+# `/brov/state` 는 depth_source 가 **고른** 경로 하나만 싣는다. 깊이 게이트와
+# dead time 분석은 고르지 않은 쪽도 있어야 성립하므로 원시값을 따로 낸다.
+def test_raw_sensor_topics_carry_both_depth_paths():
+    node, _ = _node()
+    captured = _captured(node)
+    node._tick()
+    assert len(captured["ahrs"]) == 1
+    assert len(captured["depth_ekf"]) == 1
+    # instance 2 는 미수신이므로 내지 않는다.
+    assert [len(x) for x in captured["pressure"]] == [1, 1, 0]
+    assert captured["pressure"][1][0].fluid_pressure == pytest.approx(102800.0)
+
+
+def test_ekf_depth_is_still_published_when_the_pressure_path_is_selected():
+    """어느 쪽을 골랐든 두 경로가 같은 bag 에 남아야 사후 판정이 된다."""
+    node, iface = _node(_depth_source="pressure")
+    node._armed_by_us = False
+    node._started = False
+    node._arm_permitted = True
+    R = _prepared(node, iface)
+    assert node._srv_arm(None, R()).success
+    assert node._srv_start(None, R()).success
+    iface._snap["pos_ned"] = torch.tensor([0.0, 0.0, -0.42])
+    captured = _captured(node)
+    node._tick()
+    assert captured["depth_ekf"][0].data == pytest.approx(-0.42)
+
+
+def test_raw_topics_are_republished_only_on_a_new_sample():
+    """느린 링크를 25 Hz 로 복제하면 bag 이 거짓 갱신으로 차고 hz 가 링크 주기를
+    감춘다 -- 원시 토픽의 목적이 정확히 그것을 보는 것이다."""
+    node, iface = _node()
+    captured = _captured(node)
+    node._tick()
+    node._tick()
+    assert [len(x) for x in captured["pressure"]] == [1, 1, 0]
+    assert len(captured["ahrs"]) == 1
+    assert len(captured["depth_ekf"]) == 1
+
+    iface._snap["press_seq"] = [2, 1, 0]
+    iface._snap["att_seq"] = 2
+    node._tick()
+    assert [len(x) for x in captured["pressure"]] == [2, 1, 0]
+    assert len(captured["ahrs"]) == 2
+    # LOCAL_POSITION_NED 는 안 왔다.
+    assert len(captured["depth_ekf"]) == 1
+
+
+def test_watchdog_stays_quiet_after_an_explicit_stop():
+    """stop 뒤 watchdog 이 한 번 더 '중립 정지' 를 찍지 않는다 -- 실기 로그 오독 방지."""
+    node, iface = _node()
+    node._on_wrench(_wrench(fx=5.0))             # 마지막 명령 시각이 생긴다
+    R = type("R", (), {"success": True, "message": ""})
+    assert node._srv_stop(None, R()).success
+    calls = iface.neutral_calls
+    assert node._last_cmd_monotonic is None
+    time.sleep(0.3)
+    node._tick()
+    assert iface.neutral_calls == calls, "stop 뒤 watchdog 이 다시 중립 정지를 불렀다"
+
+
+def test_request_streams_service_resends_and_reports_what_arrives():
+    """heartbeat 만 오는 링크는 재실행이 아니라 재요청으로 푼다."""
+    node, iface = _node()
+    R = type("R", (), {"success": True, "message": ""})
+    res = node._srv_request_streams(None, R())
+    assert res.success and iface.stream_requests == 1
+    assert "HEARTBEAT×5" in res.message
+    assert "안 옴: ATTITUDE_QUATERNION" in res.message
+    assert "ACK cmd=511 result=0(수락)" in res.message

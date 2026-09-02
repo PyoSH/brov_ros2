@@ -101,3 +101,101 @@ def test_predicted_crossover_matches_the_sitl_measurement(capsys):
     line = next(l for l in out.splitlines() if "교차 예측 주파수" in l)
     f_pred = float(line.split("=")[1].split("Hz")[0])
     assert 2.5 <= f_pred <= 3.5, line
+
+
+def test_seconds_truncates_the_analysis_window(capsys):
+    """여기가 끝난 뒤의 명령 0 꼬리를 잘라낸다.
+
+    deadtime_test 는 duration_s 뒤 스스로 중립으로 돌아가지만 control_active 는
+    계속 true 다. 2026-09-02 실기에서 30 s 여기 + 25.7 s 꼬리가 한 창에 들어갔다.
+    """
+    analyse(*_synth(0.08, duration=60.0), axis="heave", m_eff=28.1,
+            control_dt=CONTROL_DT, skip_s=5.0, seconds=25.0)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if l.startswith("분석 구간"))
+    assert line.startswith("분석 구간 25.0s")
+    assert "이후 25s 만 사용" in line
+
+
+def test_seconds_still_refuses_a_window_that_is_too_short():
+    with pytest.raises(SystemExit):
+        analyse(*_synth(0.08, duration=60.0), axis="heave", m_eff=28.1,
+                control_dt=CONTROL_DT, skip_s=5.0, seconds=2.0)
+
+
+def test_open_loop_drops_the_closed_loop_frequency_comparison(capsys):
+    """개루프 여기 주행에서 지배 주파수는 **넣은 신호**다. 폐루프 비교를 그대로
+    인용하면 없는 '불일치' 를 보고한다 -- 2026-09-02 첫 분석이 그랬다."""
+    analyse(*_synth(0.08, freq=1.0), axis="heave", m_eff=28.1,
+            control_dt=CONTROL_DT, skip_s=1.0, open_loop=True)
+    out = capsys.readouterr().out
+    assert "불일치" not in out
+    assert "개루프" in out
+    # 1 Hz 협대역이면 봉우리 반폭 ~250 ms 라는 분해능 한계를 같이 보고한다.
+    assert "반폭이 ~250 ms" in out
+
+
+def test_closed_loop_default_keeps_the_frequency_comparison(capsys):
+    analyse(*_synth(0.08, freq=1.0), axis="heave", m_eff=28.1,
+            control_dt=CONTROL_DT, skip_s=1.0)
+    out = capsys.readouterr().out
+    assert "실측 지배 주파수" in out
+    assert "개루프" not in out
+
+
+def _synth6(tau_s, axis_col, inertia, duration=40.0, freq=2.0):
+    """6열 형식([force3, torque3] / [linear3, angular3])으로 한 축에만 신호."""
+    t = np.arange(0.0, duration, 1.0 / FS)
+    f = 5.0 * np.sin(2 * np.pi * freq * t)
+    lag = int(round(tau_s * FS))
+    a = np.concatenate([np.zeros(lag), f[: len(f) - lag]]) / inertia
+    v = np.cumsum(a) / FS
+    wr = np.zeros((len(t), 6)); wr[:, axis_col] = f
+    st = np.zeros((len(t), 6)); st[:, axis_col] = v
+    return t, wr, t, st, np.array([t[0]]), np.array([True])
+
+
+@pytest.mark.parametrize("tau", [0.04, 0.08])
+def test_yaw_axis_recovers_known_delay_from_torque_and_gyro(tau, capsys):
+    """yaw 는 통신+추진기 지연만 재는 축이다 -- 자이로 직접, ESC 역전 없음."""
+    analyse(*_synth6(tau, 5, 0.559), axis="yaw", m_eff=0.559,
+            control_dt=CONTROL_DT, skip_s=1.0, open_loop=True)
+    out = capsys.readouterr().out
+    line = next(l for l in out.splitlines() if "피크 lag" in l)
+    got_ms = float(line.split("=")[1].split("ms")[0])
+    assert abs(got_ms - tau * 1000) <= 20.0, line
+    assert "I_eff" in out and "kg*m^2" in out
+
+
+def test_six_column_arrays_still_analyse_linear_axes(capsys):
+    """6열 bag 에서 heave 를 고르면 예전과 같은 열(2)을 읽어야 한다."""
+    analyse(*_synth6(0.08, 2, 28.1), axis="heave", m_eff=28.1,
+            control_dt=CONTROL_DT, skip_s=1.0)
+    line = next(l for l in capsys.readouterr().out.splitlines() if "피크 lag" in l)
+    assert abs(float(line.split("=")[1].split("ms")[0]) - 80.0) <= 20.0
+
+
+def test_angular_axis_refuses_three_column_arrays():
+    with pytest.raises(SystemExit):
+        analyse(*_synth(0.08), axis="yaw", m_eff=0.559,
+                control_dt=CONTROL_DT, skip_s=1.0)
+
+
+def test_closed_loop_comparison_uses_the_oscillation_band_when_mission_dominates(capsys):
+    """명령이 저주파(미션 주기)에 눌려 있어도 1~5 Hz 진동을 잡아 예측과 비교한다.
+    2026-09-02 A1 에서 0.04 Hz 가 지배해 '실측' 줄이 통째로 빠졌다."""
+    t = np.arange(0.0, 40.0, 1.0 / FS)
+    slow = 60.0 * np.sin(2 * np.pi * 0.04 * t)          # 미션 주기
+    osc = 8.0 * np.sin(2 * np.pi * 2.3 * t)              # 진동
+    f = slow + osc
+    lag = int(round(0.08 * FS))
+    a = np.concatenate([np.zeros(lag), f[: len(f) - lag]]) / 28.1
+    v = np.cumsum(a) / FS
+    wr = np.zeros((len(t), 3)); wr[:, 2] = f
+    st = np.zeros((len(t), 3)); st[:, 2] = v
+    analyse(t, wr, t, st, np.array([t[0]]), np.array([True]),
+            axis="heave", m_eff=28.1, control_dt=CONTROL_DT, skip_s=1.0)
+    out = capsys.readouterr().out
+    assert "진동대 1~5 Hz" in out
+    line = next(l for l in out.splitlines() if "실측 지배 주파수" in l)
+    assert "2.3" in line and "일치" in line and "진동대" in line

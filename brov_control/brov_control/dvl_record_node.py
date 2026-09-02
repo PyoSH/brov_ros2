@@ -77,6 +77,15 @@ class DvlRecordNode(Node):
         self._reader = DvlReader(host, port)
         self._reader.start()
         self._pub = self.create_publisher(DvlSample, "/brov/dvl/sample", 20)
+        # 2026-09-02 실기: 이 노드가 A50 에 붙은 78 s 뒤 BlueOS DVL extension 의
+        # VISION_POSITION_DELTA 가 멈췄고, 5 s 뒤 EKF 가 CONST_POS_MODE 로 떨어져
+        # LOCAL_POSITION_NED 가 끊겼다. 노드를 내려도 extension 은 스스로 회복하지
+        # 않았다(25 분 뒤에도 멈춤). 정책 주행과 **같이 띄우지 말 것.**
+        self.get_logger().warn(
+            "DVL 기록기는 A50 의 TCP 슬롯을 차지해 BlueOS DVL extension 을 밀어낼 수 "
+            "있다 -- 그러면 EKF 가 위치를 잃고 LOCAL_POSITION_NED 가 끊긴다. "
+            "정책 주행 중에는 켜지 말 것. 끄고 나서 extension 이 안 돌아오면 "
+            "BlueOS 에서 재시작할 것 (runtime/check_ekf.sh 로 확인).")
         self.create_timer(1.0 / rate, self._tick)
         self.get_logger().info(
             f"dvl_record_node 시작 — {host}:{port}, {rate:.0f} Hz 재발행. "

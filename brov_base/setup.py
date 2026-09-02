@@ -42,6 +42,7 @@ setup(
             "observation_node = brov_base.observation_node:main",
             "diag_thruster_map = brov_base.diag_thruster_map:main",
             "diag_loop_delay = brov_base.diag_loop_delay:main",
+            "diag_depth_gate = brov_base.diag_depth_gate:main",
         ],
     },
 )

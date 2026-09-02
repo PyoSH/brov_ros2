@@ -52,6 +52,7 @@ from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -83,6 +84,9 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("depth_source", default_value="mavlink_ekf",
                               choices=["mavlink_ekf", "pressure"]),
         DeclareLaunchArgument("policy_path", default_value=""),
+        # 진단용 이득 배율 (0, 1]. 0.5 로 주행해 떨림이 사라지면 "지연+세기" 기전,
+        # 남으면 deadband/chatter 다. policy_wrench_node 참조.
+        DeclareLaunchArgument("wrench_gain", default_value="1.0"),
         DeclareLaunchArgument("metadata_path", default_value=""),
         DeclareLaunchArgument("vehicle_model_path", default_value=""),
         DeclareLaunchArgument("waypoints", default_value="0,0,0;3,0,0"),
@@ -91,8 +95,12 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("lookahead_dist", default_value="1.0"),
         DeclareLaunchArgument("reach_threshold", default_value="0.15"),
         # obs_node와 같은 기본값. "0,0,0;3,0,0"이 "기체 정면으로 3 m"를 뜻한다.
+        # pool 은 마커(ArUco) 정렬이 세운 수조 절대 프레임이고, waypoint 를
+        # 수조 좌표(Z-up [m])로 읽는다. 그때는 camera/aruco/pool_alignment 를
+        # 함께 띄워야 한다 -- 이 launch 는 띄우지 않으므로 직접 쓰지 말고
+        # pool_demo_a.launch.py 를 쓸 것.
         DeclareLaunchArgument("waypoint_frame", default_value="start_heading",
-                              choices=["start_heading", "ned"]),
+                              choices=["start_heading", "ned", "pool"]),
         # loop=false면 마지막 waypoint에서 terminal hold로 넘어간다. 순항 성능을
         # 재려면 정본 미션처럼 true여야 한다.
         DeclareLaunchArgument("loop", default_value="false",
@@ -156,6 +164,7 @@ def generate_launch_description() -> LaunchDescription:
                 "metadata_path": cfg("metadata_path"),
                 "vehicle_model_path": cfg("vehicle_model_path"),
                 "expected_policy_dt_s": 0.04,
+                "wrench_gain": ParameterValue(cfg("wrench_gain"), value_type=float),
             }],
         ),
         ExecuteProcess(

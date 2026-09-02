@@ -47,8 +47,10 @@ from brov_control.policy_runner import PolicyRunner
 
 
 class PolicyWrenchNode(Node):
-    def __init__(self) -> None:
-        super().__init__("brov_policy_wrench")
+    def __init__(self, *, parameter_overrides=None) -> None:
+        super().__init__(
+            "brov_policy_wrench", parameter_overrides=parameter_overrides
+        )
 
         self.declare_parameter("policy_path", "")
         self.declare_parameter("metadata_path", "")
@@ -56,6 +58,12 @@ class PolicyWrenchNode(Node):
         self.declare_parameter("expected_policy_dt_s", 0.04)
         self.declare_parameter("max_dt_deviation", 0.5)
         self.declare_parameter("action_abs_limit", [1.0] * 6)
+        # 진단용 이득 배율. 되먹임 루프가 떠는 조건은 "보정이 늦게 오고 **동시에**
+        # 세다" 이고, 지연(실기 80 ms)은 오늘 못 줄이지만 세기는 이 한 줄로 줄어든다.
+        # 0.5 에서 떨림이 사라지면 지연+세기 기전이고, 남으면 다른 것(deadband,
+        # chatter)이다. 해법이 아니라 질문이다 -- 추종률을 깎는다. 1 을 넘는 값은
+        # 받지 않는다: 정책이 학습한 이득 위로 올릴 근거가 없다.
+        self.declare_parameter("wrench_gain", 1.0)
         p = self.get_parameter
 
         policy_path = str(p("policy_path").value)
@@ -79,6 +87,11 @@ class PolicyWrenchNode(Node):
 
         self._expected_dt = float(p("expected_policy_dt_s").value)
         self._dt_tol = float(p("max_dt_deviation").value)
+        self._gain = float(p("wrench_gain").value)
+        if not (0.0 < self._gain <= 1.0) or self._gain != self._gain:
+            raise ValueError(
+                f"wrench_gain={self._gain!r} — 0 초과 1 이하여야 한다 "
+                "(진단용 감쇠 배율이지 증폭이 아니다)")
         self._seq = 0
         self._last_obs_seq: int | None = None
         self._contract_logged = False
@@ -87,6 +100,8 @@ class PolicyWrenchNode(Node):
         self.create_subscription(Observation, "/brov/observation", self._on_obs, 1)
         self.get_logger().info(
             f"policy_wrench_node 시작 — profile {self._contract.profile}, "
+            f"wrench_gain {self._gain:.2f}"
+            + (" (진단 — 정책 이득을 줄여 돈다)" if self._gain < 1.0 else "") + ", "
             f"obs contract {self._expected_obs_contract}, "
             f"policy sha {self._contract.policy_sha256[:12]}"
         )
@@ -127,7 +142,7 @@ class PolicyWrenchNode(Node):
         action = self._policy.act(obs).clamp(-self._limit, self._limit)
         # FLU/Z-up 정책 출력 → SNAME/FRD wrench. T6 = diag(1,-1,-1,1,-1,-1)이며
         # det=+1인 진짜 회전이라 모멘트도 벡터처럼 변환된다.
-        wrench = action * self._scale * self._to_sname
+        wrench = action * self._scale * self._to_sname * self._gain
 
         out = Wrench6()
         out.header.stamp = self.get_clock().now().to_msg()

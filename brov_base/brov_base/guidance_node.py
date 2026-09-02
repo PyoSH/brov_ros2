@@ -6,7 +6,9 @@
 **"어디로 가야 하는가"만** 소유한다. 로봇을 만지지 않고, 오차를 계산하지 않고,
 적분을 갖지 않는다.
 
-  sub  /brov/state      BrovState
+  sub  /brov/state                   BrovState
+  sub  /brov/control_active          Bool
+  sub  /brov/localization/status     LocalizationStatus  (waypoint_frame=pool 만)
   pub  /brov/desired    DesiredState  (v_d_b, q_d, waypoint_index, mission_complete)
 
 **step_3에서 LOSGuidance가 NBV/커버리지 모듈로 교체되는 지점이 정확히 여기다.**
@@ -34,14 +36,26 @@ from __future__ import annotations
 from geometry_msgs.msg import Quaternion, Vector3
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
 from std_msgs.msg import Bool
 import torch
 
-from brov_interfaces.msg import BrovState, DesiredState
+from brov_interfaces.msg import BrovState, DesiredState, LocalizationStatus
 
 from brov_base import math_utils as mu
 from brov_base.guidance import LOSGuidance, RandomAttitudeConfig
 from brov_base.mission import pool_to_mission_quaternion
+
+
+# NED(Z-down) <-> pool/odom(Z-up) 기저 변환. 둘 다 X 축 180° 회전이라 자기
+# 자신이 역이다. odometry.py 의 ``_S_DIAGONAL`` 과 같은 값이고, 같은 이유로
+# 쿼터니언에서는 wxyz 성분에 (1, 1, -1, -1) 을 곱하는 것과 같다.
+_S = (1.0, -1.0, -1.0)
 
 
 def _parse_waypoints(text: str) -> torch.Tensor:
@@ -61,8 +75,10 @@ def _parse_waypoints(text: str) -> torch.Tensor:
 
 
 class GuidanceNode(Node):
-    def __init__(self) -> None:
-        super().__init__("brov_guidance")
+    def __init__(self, *, parameter_overrides=None) -> None:
+        super().__init__(
+            "brov_guidance", parameter_overrides=parameter_overrides
+        )
 
         self.declare_parameter("waypoints", "0,0,0;3,0,0")
         self.declare_parameter("cruise_speed", 0.2)
@@ -112,9 +128,18 @@ class GuidanceNode(Node):
         #   start_heading — 시작 위치를 원점, 시작 yaw를 +X로 삼는 프레임.
         #                   "0,0,0;3,0,0"이 "기체 정면으로 3 m"를 뜻한다.
         #   ned           — 원시 world 좌표 그대로.
+        #   pool          — 마커(ArUco) 정렬이 세운 **수조 절대 프레임**.
+        #                   Z-up 이고 단위는 m 다. "0.6,0.85,0.7;3.1,0.85,0.7"
+        #                   이 수조 바닥 기준 실제 좌표를 뜻하므로, 기체를 어디에
+        #                   놓았든 벽까지의 여유가 보장된다. start_heading 은
+        #                   그것이 보장되지 않는다 -- 배치가 틀리면 경로가
+        #                   통째로 벽 밖으로 나간다.
         # 이 구분이 없으면 기체가 90° yaw로 떠 있을 때 정면 주행 미션이
         # 횡방향 주행이 된다(실제 SITL에서 v_d_b가 body -Y로 나왔다).
         self.declare_parameter("waypoint_frame", "start_heading")
+        # pool 프레임 전용. 정렬 상태가 이보다 오래됐으면 목표를 내지 않는다.
+        # localization_node 의 status 주기는 0.5 s 다.
+        self.declare_parameter("pool_status_max_age_s", 2.0)
 
         p = self.get_parameter
         wps = _parse_waypoints(str(p("waypoints").value))
@@ -122,11 +147,18 @@ class GuidanceNode(Node):
         lookahead = float(p("lookahead_dist").value)
         reach = float(p("reach_threshold").value)
         self._state_max_age = float(p("state_max_age_s").value)
+        self._pool_status_max_age = float(p("pool_status_max_age_s").value)
         self._waypoint_frame = str(p("waypoint_frame").value)
-        if self._waypoint_frame not in ("start_heading", "ned"):
+        if self._waypoint_frame not in ("start_heading", "ned", "pool"):
             raise ValueError(
                 f"waypoint_frame={self._waypoint_frame!r} — "
-                "'start_heading' 또는 'ned'여야 한다")
+                "'start_heading', 'ned' 또는 'pool'이어야 한다")
+        if self._waypoint_frame == "pool":
+            # 미션 프레임의 규약은 NED(Z-down) 다 -- LOSGuidance 도, 아래에서
+            # state 를 회전시키는 식도 그것을 전제한다. pool 좌표(Z-up)를
+            # 여기서 한 번 바꿔 두면 나머지 경로는 손댈 것이 없다. S 는 상수라
+            # 정렬 결과를 기다릴 필요가 없다.
+            wps = wps * torch.tensor(_S, dtype=wps.dtype)
 
         self._check_limits(wps, speed, lookahead, reach)
 
@@ -194,9 +226,26 @@ class GuidanceNode(Node):
         self._last_state_wall = None      # random_at_waypoint 의 dwell 적산용 dt
         self.create_subscription(
             Bool, "/brov/control_active", self._on_active, 1)
+        # pool 정렬 상태. one-shot 정렬이라 topic 은 latched(TRANSIENT_LOCAL)다 --
+        # 이 노드가 늦게 떠도 마지막 상태를 받는다.
+        self._pool_status: LocalizationStatus | None = None
+        self._pool_status_wall = None
+        self._locked_alignment: tuple[int, str] | None = None
+        self._pool_gate_reason = ""
+        if self._waypoint_frame == "pool":
+            self.create_subscription(
+                LocalizationStatus, "/brov/localization/status",
+                self._on_pool_status,
+                QoSProfile(
+                    history=HistoryPolicy.KEEP_LAST, depth=1,
+                    reliability=ReliabilityPolicy.RELIABLE,
+                    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                ),
+            )
         self.get_logger().info(
             f"guidance_node 시작 — waypoint {wps.shape[1]}개, "
-            f"cruise {speed} m/s, heading {p('heading_mode').value}"
+            f"cruise {speed} m/s, heading {p('heading_mode').value}, "
+            f"frame {self._waypoint_frame}"
         )
 
     def _check_limits(self, wps, speed, lookahead, reach) -> None:
@@ -223,8 +272,80 @@ class GuidanceNode(Node):
         active = bool(msg.data)
         if active and not self._control_active:
             self._initialized = False
+            self._locked_alignment = None
             self.get_logger().info("제어 시작 — mission frame 재확정 대기")
         self._control_active = active
+
+    # ------------------------------------------------------------ pool 정렬
+    def _on_pool_status(self, msg: LocalizationStatus) -> None:
+        self._pool_status = msg
+        self._pool_status_wall = self.get_clock().now().nanoseconds * 1e-9
+
+    def _usable_pool_status(self) -> LocalizationStatus | None:
+        """쓸 수 있는 정렬이면 status 를, 아니면 사유를 남기고 None 을 낸다."""
+        status = self._pool_status
+        if status is None:
+            self._pool_gate_reason = "/brov/localization/status 미수신"
+            return None
+        age = self.get_clock().now().nanoseconds * 1e-9 - self._pool_status_wall
+        if age > self._pool_status_max_age:
+            self._pool_gate_reason = f"정렬 상태가 {age:.1f}s 째 갱신되지 않았다"
+            return None
+        if status.state != LocalizationStatus.INITIALIZED:
+            self._pool_gate_reason = (
+                f"정렬 미완료(state={status.state}): {status.reason}")
+            return None
+        if not status.output_valid:
+            self._pool_gate_reason = f"정렬 출력 무효: {status.reason}"
+            return None
+        current = (int(status.epoch), str(status.alignment_id))
+        if self._locked_alignment is not None and current != self._locked_alignment:
+            # 주행 중 정렬이 갈렸다. **같은 절대 좌표계가 아니다** -- 여기서
+            # 조용히 새 정렬로 갈아타면 벽까지 남은 거리가 통째로 바뀐다.
+            self._pool_gate_reason = (
+                f"정렬이 주행 중 바뀌었다 {self._locked_alignment} -> {current}")
+            return None
+        return status
+
+    def _pool_mission_frame(
+        self, status: LocalizationStatus
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """``status.pool_to_odom`` 에서 (q_ned_to_mission, origin_ned) 를 만든다.
+
+        ``pool_to_odom`` 은 이름과 달리 **odom 좌표를 pool 로 옮기는** 변환
+        ``T_pool_odom`` 이다(localization_node 가 ``self._alignment`` 를 그대로
+        싣고, 같은 값을 pool->odom TF 로도 방송한다). 세 관계를 이으면 된다::
+
+            p_odom    = S p_ned                     (S = diag(1, -1, -1))
+            p_pool    = R_A p_odom + t_A            (T_pool_odom)
+            p_mission = S p_pool                    (미션 프레임은 NED 규약)
+
+        합치면 ``p_mission = (S R_A S) p_ned + S t_A`` 이므로
+
+            R_nm        = S R_A S      -> 쿼터니언 wxyz 에 (1, 1, -1, -1)
+            origin_ned  = -R_nm^T S t_A = -S (R_A^T t_A)
+
+        (S S = I 를 썼다. ``quat_apply(q_nm, p - origin)`` 형태에 맞춘 것이다.)
+        """
+        rotation = status.pool_to_odom.rotation
+        translation = status.pool_to_odom.translation
+        q_a = torch.tensor(
+            [[rotation.w, rotation.x, rotation.y, rotation.z]],
+            dtype=torch.float32)
+        t_a = torch.tensor(
+            [[translation.x, translation.y, translation.z]], dtype=torch.float32)
+        norm = torch.linalg.vector_norm(q_a, dim=-1, keepdim=True)
+        if not torch.isfinite(norm).all() or float(norm.min()) <= 1e-6:
+            raise ValueError(f"pool_to_odom 회전이 쿼터니언이 아니다: {q_a.tolist()}")
+        # conj == inv 는 단위 쿼터니언에서만 참이다. 아니면 origin 이 배율만큼
+        # 어긋나고, 그 오차는 수조 좌표 전체에 그대로 실린다.
+        q_a = q_a / norm
+        signs = torch.tensor(_S, dtype=torch.float32)
+
+        q_ned_to_mission = q_a * torch.tensor(
+            [[1.0, 1.0, -1.0, -1.0]], dtype=torch.float32)
+        origin_ned = -mu.quat_apply(mu.quat_conjugate(q_a), t_a) * signs
+        return q_ned_to_mission, origin_ned
 
     def _on_state(self, state: BrovState) -> None:
         out = DesiredState()
@@ -243,6 +364,17 @@ class GuidanceNode(Node):
         quat = torch.tensor([[state.attitude.w, state.attitude.x,
                               state.attitude.y, state.attitude.z]], dtype=torch.float32)
 
+        if self._waypoint_frame == "pool":
+            # 절대 프레임 주행은 정렬이 살아 있는 동안에만 성립한다. 침묵하면
+            # 정책이 명령을 못 내고 base watchdog 이 0.25 s 안에 중립 정지한다 --
+            # 정렬이 무효인 채로 계속 미는 것보다 안전하다.
+            status = self._usable_pool_status()
+            if status is None:
+                self.get_logger().warn(
+                    f"pool 정렬을 쓸 수 없어 목표를 내지 않는다 — "
+                    f"{self._pool_gate_reason}", throttle_duration_sec=2.0)
+                return
+
         if not self._initialized:
             self._origin_ned = pos.clone()
             if self._waypoint_frame == "start_heading":
@@ -252,6 +384,26 @@ class GuidanceNode(Node):
                 self.get_logger().info(
                     f"mission frame 확정 — 원점 {pos[0].tolist()}, "
                     f"yaw0 {float(yaw0[0]) * 57.2958:.1f}°")
+            elif self._waypoint_frame == "pool":
+                try:
+                    self._q_ned_to_mission, self._origin_ned = (
+                        self._pool_mission_frame(status))
+                except ValueError as exc:
+                    # 콜백에서 던지면 노드가 죽는다. 게이트처럼 침묵한다 --
+                    # 결과는 같고(watchdog 중립 정지), 사유는 로그에 남는다.
+                    self._pool_gate_reason = str(exc)
+                    self.get_logger().error(
+                        f"pool 정렬을 프레임으로 못 바꾼다 — {exc}",
+                        throttle_duration_sec=2.0)
+                    return
+                self._locked_alignment = (
+                    int(status.epoch), str(status.alignment_id))
+                here = mu.quat_apply(
+                    self._q_ned_to_mission, pos - self._origin_ned)
+                self.get_logger().info(
+                    f"mission frame = pool (epoch {status.epoch}, "
+                    f"alignment {status.alignment_id}) — 현재 수조 좌표 "
+                    f"{[round(v, 3) for v in (here * torch.tensor(_S))[0].tolist()]}")
             else:
                 self.get_logger().info("waypoint_frame=ned — 원시 world 좌표를 쓴다")
             if self._random_cfg is not None and self._waypoint_frame == "start_heading":

@@ -321,3 +321,73 @@ def test_arm_default_api_still_accepts_already_armed_vehicle():
     interface._armed = True
 
     assert interface.arm() is True
+
+
+# ---------------------------------------------------------------- 스트림 요청
+# SCALED_PRESSURE 는 수신 처리만 있고 요청이 없었다. 기체가 이 endpoint 로
+# 흘려주는지가 BlueOS/ArduSub 기본 스트림 설정에 달려 있었고, 안 오면 깊이
+# 게이트(docs/REAL_ROBOT_SESSION.md 1단계)를 아예 못 한다 -- 물에 들어간 뒤에야
+# 드러나는 종류의 결함이다.
+class _StreamRequestRecorder:
+    def __init__(self):
+        self.target_system = 1
+        self.target_component = 1
+        self.sent = []
+        self.mav = self
+
+    def command_long_send(self, sysid, compid, command, confirmation,
+                          p1, p2, *rest):
+        self.sent.append((int(p1), int(p2)))
+
+
+def _requested_intervals(telemetry_rate_hz=25.0, baro_rate_hz=10.0):
+    from brov_base.mavlink_interface import RealRobotInterface
+
+    interface = RealRobotInterface(
+        "udpin:0.0.0.0:14550",
+        telemetry_rate_hz=telemetry_rate_hz,
+        baro_rate_hz=baro_rate_hz,
+    )
+    interface._master = _StreamRequestRecorder()
+    interface._request_telemetry_streams()
+    return dict(interface._master.sent)
+
+
+def test_all_three_scaled_pressure_instances_are_requested():
+    from pymavlink import mavutil
+
+    intervals = _requested_intervals()
+    for msg_id in (
+        mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE,
+        mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE2,
+        mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE3,
+    ):
+        assert msg_id in intervals, (
+            "어느 instance 가 물속 센서인지는 BARO_PRIMARY 를 읽기 전에는 "
+            "모른다. 셋 다 요청해야 한다"
+        )
+
+
+def test_pose_streams_are_still_requested_at_the_control_rate():
+    from pymavlink import mavutil
+
+    intervals = _requested_intervals(telemetry_rate_hz=25.0)
+    for msg_id in (
+        mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE_QUATERNION,
+        mavutil.mavlink.MAVLINK_MSG_ID_LOCAL_POSITION_NED,
+        mavutil.mavlink.MAVLINK_MSG_ID_EKF_STATUS_REPORT,
+        mavutil.mavlink.MAVLINK_MSG_ID_SERVO_OUTPUT_RAW,
+    ):
+        assert intervals[msg_id] == 40_000        # 25 Hz
+
+
+def test_baro_is_requested_slower_than_the_control_rate():
+    """기압을 제어 주기로 요청하면 같은 값이 중복으로 와 bag 을 부풀린다."""
+    from pymavlink import mavutil
+
+    intervals = _requested_intervals(telemetry_rate_hz=25.0, baro_rate_hz=10.0)
+    assert intervals[mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE] == 100_000
+    assert (
+        intervals[mavutil.mavlink.MAVLINK_MSG_ID_SCALED_PRESSURE]
+        > intervals[mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE_QUATERNION]
+    )

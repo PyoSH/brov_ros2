@@ -112,6 +112,8 @@ IsaacLab 학습/평가와 Gazebo SITL·실기 배포 사이에서 확인된 차�
 Ubuntu 22.04/ROS 2 Humble 환경의 fresh clone/build 절차, sim2sim 분해 실험 및
 재학습 요구사항은
 [docs/SIM2SIM_RETRAINING_HANDOFF.md](docs/SIM2SIM_RETRAINING_HANDOFF.md)에 기록한다.
+2026-09-02 실기 세션(dead time 80 ms, 이득 ½ 대조, 포화 limit cycle 판정)과 학습 쪽
+이관은 [docs/deadtime_result_to_training.md](docs/deadtime_result_to_training.md)에 있다.
 
 ## Packages and executables
 

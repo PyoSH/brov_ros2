@@ -24,6 +24,21 @@
    서로의 PWM을 덮어써서 어느 쪽이 이겼는지 사후에 알 수 없다.
 3. fault는 latch된다 — 한 번 걸리면 명시적 disarm/재시작 전까지 안 풀린다.
 
+이 노드가 내는 토픽
+====================
+    /brov/state                        BrovState — 선택된 경로 하나의 상태
+    /brov/control_active               Bool
+    /brov/odometry/local_with_session  OdometrySession — 마커(pool) 정렬 입력
+    /brov/odometry/local               Odometry (진단용)
+    /brov/odometry/session_id          String (latched)
+    /brov/sensor/ahrs                  Imu — 원시 자세·각속도
+    /brov/sensor/depth_ekf             Float32 — EKF 수직 위치 [m, 아래가 +]
+    /brov/sensor/pressure0..2          FluidPressure — baro instance 0/1/2 원시압
+
+뒤의 다섯은 `/brov/state`가 **고르지 않은 쪽**을 남기기 위한 것이다. depth 게이트
+(docs/REAL_ROBOT_SESSION.md 1단계)와 dead time 분석은 선택되지 않은 경로의 값이
+같은 bag 에 있어야 성립한다. `publish_odometry`/`publish_sensor_topics`로 끈다.
+
 기존 `obs_node.py`와의 관계
 ===========================
 obs_node는 2531줄로 로봇 I/O·유도·관측·안전을 모두 소유하던 monolith다.
@@ -37,18 +52,27 @@ import math
 import time
 
 from geometry_msgs.msg import Quaternion, Vector3
+from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Bool, Empty
+from rclpy.qos import (
+    DurabilityPolicy,
+    HistoryPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+)
+from sensor_msgs.msg import FluidPressure, Imu
+from std_msgs.msg import Bool, Empty, Float32, String
 from std_srvs.srv import Trigger
 import torch
 
-from brov_interfaces.msg import BrovState, Wrench6
+from brov_interfaces.msg import BrovState, OdometrySession, Wrench6
 
 from brov_base.mavlink_interface import (
     RealRobotInterface,
     thruster_reversal_sign_for_profile,
 )
+from brov_base.odometry import ned_frd_to_odom_flu
 from brov_base.vendor.params import load_brov2_yaml, thruster_pos_dir_ned
 from brov_base.vendor.thruster import BROV2ThrusterModel, build_allocation_matrix
 
@@ -101,6 +125,33 @@ class BaseNode(Node):
         self.declare_parameter("pos_max_age_s", 0.5)
         self.declare_parameter("heartbeat_max_age_s", 2.0)
         self.declare_parameter("required_custom_mode", _MANUAL_CUSTOM_MODE)
+
+        # ── 마커(pool) 정렬용 odometry 발행 ──
+        # pool_alignment_node 는 `/brov/odometry/local_with_session` 하나만
+        # 구독한다. legacy obs_node 만 그것을 냈으므로 분리 스택에서는 마커
+        # 정렬을 쓸 수 없었다. 링크를 단독 소유하는 것이 이 노드이므로
+        # (동시에 두 프로세스가 MAVLink 를 열 수 없다) 여기서 낸다.
+        self.declare_parameter("publish_odometry", True)
+        self.declare_parameter("odom_frame", "odom")
+        self.declare_parameter("base_frame", "base_link")
+        self.declare_parameter("odom_position_variance", 1.0)
+        self.declare_parameter("odom_orientation_variance", 0.25)
+        self.declare_parameter("odom_linear_velocity_variance", 0.25)
+        self.declare_parameter("odom_angular_velocity_variance", 0.25)
+        # EKF 원점/yaw 리셋이나 DVL 재접속은 MAVLink boot time 을 바꾸지 않으므로
+        # session id 만으로는 드러나지 않는다. 마커 정렬은 **한 번만** 맞추고
+        # 이후 EKF odometry 로 절대 위치를 추측하므로, 이런 도약이 조용히
+        # 지나가면 벽까지 남은 거리가 통째로 틀린다. obs_node 와 같은 인접 샘플
+        # 검사로 session 을 진행시켜 pool_alignment_node 가 무효화하게 한다.
+        self.declare_parameter("odom_jump_translation_m", 0.50)
+        self.declare_parameter("odom_jump_rotation_deg", 45.0)
+        self.declare_parameter("odom_jump_max_dt_s", 0.50)
+
+        # ── 원시 센서 토픽 ──
+        # `/brov/state` 는 **선택된** 경로 하나만 싣는다(depth_source 가 고른 z).
+        # 지연·깊이 게이트 분석은 고르지 않은 쪽도 있어야 성립하므로, 원시값을
+        # 따로 낸다. dvl 은 별도 노드(brov_control/dvl_record_node)가 낸다.
+        self.declare_parameter("publish_sensor_topics", True)
 
         p = self.get_parameter
         self._send_pwm = bool(p("send_pwm").value)
@@ -183,6 +234,38 @@ class BaseNode(Node):
         self._first_command = True
         self._stopped_by_watchdog = False
 
+        # ── odometry 발행 상태 ──
+        self._publish_odometry = bool(p("publish_odometry").value)
+        self._odom_frame = str(p("odom_frame").value).strip()
+        self._base_frame = str(p("base_frame").value).strip()
+        if not self._odom_frame or not self._base_frame:
+            raise ValueError("odom_frame 과 base_frame 은 비어 있을 수 없다")
+        if self._odom_frame == self._base_frame:
+            raise ValueError("odom_frame 과 base_frame 은 서로 달라야 한다")
+        self._odom_covariance = {
+            key: self._positive("odom_" + key + "_variance")
+            for key in (
+                "position", "orientation", "linear_velocity", "angular_velocity"
+            )
+        }
+        self._odom_jump_translation_m = self._positive("odom_jump_translation_m")
+        self._odom_jump_rotation_rad = math.radians(
+            self._positive("odom_jump_rotation_deg")
+        )
+        self._odom_jump_max_dt_s = self._positive("odom_jump_max_dt_s")
+        self._raw_odometry_session_id = ""
+        self._navigation_jump_count = 0
+        self._last_odom_position = None
+        self._last_odom_orientation = None
+        self._last_odom_sample_time = None
+        self._last_published_session_id = ""
+        self._publish_sensor_topics = bool(p("publish_sensor_topics").value)
+        self._last_press_seq = [-1, -1, -1]
+        self._last_att_seq = None
+        self._last_pos_seq = None
+        self._last_odometry_key = None
+        self._last_snapshot = None
+
         # ── 인터페이스 ──
         self._pub_state = self.create_publisher(BrovState, "/brov/state", 10)
         # 제어 루프가 실제로 닫혀 있는지. observation_node가 이걸 보고 적분한다 --
@@ -201,6 +284,44 @@ class BaseNode(Node):
                          ("disarm_control", self._srv_disarm),
                          ("estop_control", self._srv_estop)):
             self.create_service(Trigger, f"/brov/{name}", cb)
+        # 스트림 재요청. "telemetry 없음" 이 heartbeat 만 오는 상태라면 재실행 대신
+        # 이것으로 푼다. 응답에 지금 수신 중인 메시지 타입을 실어 준다.
+        self.create_service(Trigger, "/brov/request_streams", self._srv_request_streams)
+        self._last_rx_counts: dict[str, int] = {}
+
+        latched = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST, depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._pub_odom = None
+        self._pub_odom_session = None
+        self._pub_odom_with_session = None
+        if self._publish_odometry:
+            self._pub_odom = self.create_publisher(
+                Odometry, "/brov/odometry/local", 10)
+            self._pub_odom_session = self.create_publisher(
+                String, "/brov/odometry/session_id", latched)
+            self._pub_odom_with_session = self.create_publisher(
+                OdometrySession, "/brov/odometry/local_with_session", 10)
+        self._pub_ahrs = None
+        self._pub_depth_ekf = None
+        self._pub_pressure = []
+        if self._publish_sensor_topics:
+            self._pub_ahrs = self.create_publisher(Imu, "/brov/sensor/ahrs", 10)
+            # EKF 수직 위치. depth_source 가 pressure 여도 계속 낸다 --
+            # 2026-08-29 SITL 에서 이 값이 초기값에 얼어붙었고, 얼어붙었다는
+            # 사실 자체가 bag 에 남아 있어야 사후에 판정할 수 있다.
+            self._pub_depth_ekf = self.create_publisher(
+                Float32, "/brov/sensor/depth_ekf", 10)
+            # SCALED_PRESSURE/2/3 = baro instance 0/1/2 를 변환 없이 낸다.
+            # 어느 instance 가 물속 센서인지는 probe 순서에 달렸으므로
+            # (docs/REAL_ROBOT_SESSION.md 1단계) 추론하지 않고 셋 다 남긴다.
+            self._pub_pressure = [
+                self.create_publisher(
+                    FluidPressure, f"/brov/sensor/pressure{i}", 10)
+                for i in range(3)
+            ]
 
         period = 1.0 / float(p("state_rate_hz").value)
         self.create_timer(period, self._tick)
@@ -212,9 +333,16 @@ class BaseNode(Node):
             f"watchdog={self._cmd_timeout:.3f}s, 추진기 {self._thruster_model} ({limits})"
         )
 
+    def _positive(self, name: str) -> float:
+        value = float(self.get_parameter(name).value)
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} 은 유한한 양수여야 한다 (받은 값 {value})")
+        return value
+
     # ------------------------------------------------------------------ 상태
     def _read_state(self) -> BrovState | None:
         snap = self._interface.snapshot()
+        self._last_snapshot = snap
         msg = BrovState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.seq = self._seq
@@ -280,10 +408,235 @@ class BaseNode(Node):
         msg.reason = "stale: " + ", ".join(stale) if stale else ""
         return msg
 
+    # -------------------------------------------------------------- odometry
+    @staticmethod
+    def _diagonal_covariance(translation: float, rotation: float) -> list[float]:
+        covariance = [0.0] * 36
+        for index in (0, 7, 14):
+            covariance[index] = translation
+        for index in (21, 28, 35):
+            covariance[index] = rotation
+        return covariance
+
+    def _odometry_session_id(self, snap: dict) -> str:
+        raw = str(snap["odometry_session_id"]).strip()
+        return f"{raw}:nav{self._navigation_jump_count}"
+
+    def _detect_odometry_jump(self, converted, snap: dict) -> str | None:
+        """인접 샘플이 물리적으로 불가능하게 뛰면 session 을 진행시킨다.
+
+        MAVLink boot time 은 EKF 원점/yaw 리셋이나 DVL 재접속을 드러내지 못한다.
+        한 번만 맞추는 마커 정렬은 그 이후 EKF odometry 로 절대 위치를 추측하므로,
+        이런 도약이 조용히 지나가면 벽까지의 거리가 통째로 틀린다.
+        """
+        raw = str(snap.get("odometry_session_id", "")).strip()
+        sample_time = max(float(snap["att_rx_time"]), float(snap["pos_rx_time"]))
+        position = converted.position_odom.detach().clone()
+        orientation = converted.orientation_xyzw.detach().clone()
+
+        if raw != self._raw_odometry_session_id:
+            self._raw_odometry_session_id = raw
+            self._navigation_jump_count = 0
+            self._last_odom_position = position
+            self._last_odom_orientation = orientation
+            self._last_odom_sample_time = sample_time
+            return None
+
+        reason = None
+        if (self._last_odom_position is not None
+                and self._last_odom_orientation is not None
+                and self._last_odom_sample_time is not None):
+            dt = sample_time - self._last_odom_sample_time
+            if 0.0 <= dt <= self._odom_jump_max_dt_s:
+                translation = float(
+                    torch.linalg.vector_norm(position - self._last_odom_position))
+                dot = float(torch.dot(orientation, self._last_odom_orientation))
+                angle = 2.0 * math.acos(min(1.0, max(0.0, abs(dot))))
+                if translation > self._odom_jump_translation_m:
+                    reason = f"위치 도약 {translation:.3f} m / {dt:.3f} s"
+                elif angle > self._odom_jump_rotation_rad:
+                    reason = f"자세 도약 {math.degrees(angle):.1f}° / {dt:.3f} s"
+        self._last_odom_position = position
+        self._last_odom_orientation = orientation
+        self._last_odom_sample_time = sample_time
+        if reason is not None:
+            self._navigation_jump_count += 1
+        return reason
+
+    def _publish_odometry_sample(self, snap: dict) -> None:
+        """pool_alignment_node 가 구독하는 원자 envelope 을 낸다.
+
+        fault 를 latch 하지 않는다 -- 도약은 session id 를 바꾸고, 마커 정렬은
+        그 변화만으로 스스로 무효가 된다(pool 모드 guidance 는 그때 침묵하고
+        base watchdog 이 중립 정지시킨다). start_heading 주행은 절대 프레임에
+        의존하지 않으므로 계속 돈다.
+        """
+        if not str(snap.get("odometry_session_id", "")).strip():
+            # session id 없이 낸 odometry 는 pool_alignment_node 가 어차피
+            # 거절한다. 조용히 거절당하느니 내지 않는다.
+            return
+        converted = ned_frd_to_odom_flu(
+            snap["pos_ned"], snap["att_quat_ned"],
+            snap["vel_ned"], snap["body_rates_ned"],
+        )
+        jump = self._detect_odometry_jump(converted, snap)
+        session_id = self._odometry_session_id(snap)
+        if jump is not None:
+            self.get_logger().error(
+                f"odometry {jump} — session 진행: {session_id}. "
+                "마커 정렬이 있었다면 무효가 된다")
+        if session_id != self._last_published_session_id:
+            self._last_published_session_id = session_id
+            self._pub_odom_session.publish(String(data=session_id))
+            self.get_logger().info(f"odometry session: {session_id}")
+
+        message = Odometry()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = self._odom_frame
+        message.child_frame_id = self._base_frame
+        position = converted.position_odom.tolist()
+        orientation = converted.orientation_xyzw.tolist()
+        linear = converted.linear_velocity_body_flu.tolist()
+        angular = converted.angular_velocity_body_flu.tolist()
+        message.pose.pose.position.x = float(position[0])
+        message.pose.pose.position.y = float(position[1])
+        message.pose.pose.position.z = float(position[2])
+        message.pose.pose.orientation.x = float(orientation[0])
+        message.pose.pose.orientation.y = float(orientation[1])
+        message.pose.pose.orientation.z = float(orientation[2])
+        message.pose.pose.orientation.w = float(orientation[3])
+        message.twist.twist.linear.x = float(linear[0])
+        message.twist.twist.linear.y = float(linear[1])
+        message.twist.twist.linear.z = float(linear[2])
+        message.twist.twist.angular.x = float(angular[0])
+        message.twist.twist.angular.y = float(angular[1])
+        message.twist.twist.angular.z = float(angular[2])
+        message.pose.covariance = self._diagonal_covariance(
+            self._odom_covariance["position"],
+            self._odom_covariance["orientation"])
+        message.twist.covariance = self._diagonal_covariance(
+            self._odom_covariance["linear_velocity"],
+            self._odom_covariance["angular_velocity"])
+
+        envelope = OdometrySession()
+        envelope.odometry = message
+        envelope.odometry_session_id = session_id
+        self._pub_odom_with_session.publish(envelope)
+        self._pub_odom.publish(message)
+
+    # ---------------------------------------------------------------- 센서
+    def _publish_sensor_sample(self, snap: dict) -> None:
+        """실제로 새로 온 샘플만 낸다.
+
+        telemetry 는 `state_rate_hz` 보다 느리다. 같은 값을 tick 마다 복제하면
+        bag 이 거짓 갱신으로 차고 `ros2 topic hz` 가 링크의 실제 주기를 감춘다 --
+        원시 토픽의 목적이 정확히 그것을 보는 것이다.
+        """
+        stamp = self.get_clock().now().to_msg()
+        att_seq = snap.get("att_seq")
+        if att_seq != self._last_att_seq:
+            self._last_att_seq = att_seq
+            q = snap["att_quat_ned"].reshape(4)
+            omega = snap["body_rates_ned"].reshape(3)
+            imu = Imu()
+            imu.header.stamp = stamp
+            # NED world -> FRD body. `/brov/state.attitude` 와 **같은 규약**이다 --
+            # 여기서 몰래 변환하면 두 토픽을 나란히 놓고 볼 수 없다.
+            imu.header.frame_id = self._base_frame
+            imu.orientation = Quaternion(
+                w=float(q[0]), x=float(q[1]), y=float(q[2]), z=float(q[3]))
+            imu.angular_velocity = Vector3(
+                x=float(omega[0]), y=float(omega[1]), z=float(omega[2]))
+            # 선가속도는 이 링크로 오지 않는다. -1 이 REP-145 의 "미제공" 표시다.
+            imu.linear_acceleration_covariance[0] = -1.0
+            self._pub_ahrs.publish(imu)
+
+        pos_seq = snap.get("pos_seq")
+        if pos_seq != self._last_pos_seq:
+            self._last_pos_seq = pos_seq
+            self._pub_depth_ekf.publish(
+                Float32(data=float(snap["pos_ned"].reshape(3)[2])))
+
+        seqs = snap.get("press_seq") or [0, 0, 0]
+        for i, hpa in enumerate(snap.get("press_abs_hpa") or [None, None, None]):
+            if hpa is None or int(seqs[i]) == self._last_press_seq[i]:
+                continue
+            self._last_press_seq[i] = int(seqs[i])
+            pressure = FluidPressure()
+            pressure.header.stamp = stamp
+            pressure.header.frame_id = f"baro{i}"
+            pressure.fluid_pressure = float(hpa) * 100.0     # hPa -> Pa
+            pressure.variance = 0.0
+            self._pub_pressure[i].publish(pressure)
+
+    def _rx_summary(self) -> str:
+        """지난 호출 이후 늘어난 MAVLink 메시지 타입별 개수."""
+        get = getattr(self._interface, "rx_counts", None)
+        if get is None:
+            return "(interface 가 수신 통계를 내지 않는다)"
+        now = get()
+        delta = {k: now[k] - self._last_rx_counts.get(k, 0) for k in now}
+        self._last_rx_counts = now
+        seen = ", ".join(f"{k}×{v}" for k, v in sorted(delta.items()) if v > 0)
+        missing = [k for k in ("ATTITUDE_QUATERNION", "LOCAL_POSITION_NED")
+                   if delta.get(k, 0) == 0]
+        # SET_MESSAGE_INTERVAL(511) 의 ACK 가 왔는지가 결정적이다: ACK 없음 = 요청이
+        # FC 에 닿지 않음(라우터), ACK 거절 = FC 가 거부, ACK 수락인데 안 옴 = 라우터가
+        # 우리 쪽으로 안 보냄.
+        ack_fn = getattr(self._interface, "last_command_ack", None)
+        ack = ack_fn() if ack_fn else None
+        ack_text = ("ACK 없음" if ack is None
+                    else f"ACK cmd={ack[0]} result={ack[1]}({'수락' if ack[1] == 0 else '거절'})")
+        return (f"수신: {seen or '없음'}"
+                + (f" | 안 옴: {', '.join(missing)}" if missing else "")
+                + f" | {ack_text}")
+
+    def _srv_request_streams(self, _req, res):
+        fn = getattr(self._interface, "request_telemetry_streams", None)
+        if fn is None:
+            res.success, res.message = False, "interface 가 재요청을 지원하지 않는다"
+            return res
+        try:
+            fn()
+        except Exception as exc:
+            res.success, res.message = False, f"재요청 실패: {exc}"
+            return res
+        res.success, res.message = True, f"스트림 재요청 보냄. {self._rx_summary()}"
+        return res
+
     def _tick(self) -> None:
         msg = self._read_state()
         if msg is not None:
             self._pub_state.publish(msg)
+            if not msg.valid and msg.reason == "telemetry 없음":
+                # 무엇이 오고 무엇이 안 오는지를 5 s 마다 찍는다. heartbeat 만 오면
+                # /brov/request_streams, 아무것도 안 오면 링크/라우터 문제다.
+                self.get_logger().warn(
+                    f"telemetry 없음 — {self._rx_summary()}. "
+                    "heartbeat 만 온다면: ros2 service call /brov/request_streams "
+                    "std_srvs/srv/Trigger",
+                    throttle_duration_sec=5.0)
+        snap = self._last_snapshot
+        if snap is not None:
+            # telemetry 는 state_rate_hz 보다 느리게 온다. 같은 샘플을 다시 내면
+            # pool_alignment_node 가 그것을 **독립 표본으로 세어** 정지 상태
+            # 20 표본 조건을 가짜로 채운다 -- 정렬이 실제보다 정확해 보인다.
+            key = (snap.get("att_seq"), snap.get("pos_seq"))
+            if key != self._last_odometry_key:
+                self._last_odometry_key = key
+                if self._publish_odometry:
+                    # 진단·정렬 경로다. 여기서 던진 예외가 timer 콜백을 타고
+                    # 나가면 **제어 경로까지 같이 죽는다** -- watchdog 도 이
+                    # 타이머 안에 있다. 기록하고 넘어간다.
+                    try:
+                        self._publish_odometry_sample(snap)
+                    except (ValueError, RuntimeError, KeyError) as exc:
+                        self.get_logger().error(f"odometry 발행 실패: {exc}")
+            if self._publish_sensor_topics:
+                try:
+                    self._publish_sensor_sample(snap)
+                except (ValueError, RuntimeError, KeyError) as exc:
+                    self.get_logger().error(f"센서 토픽 발행 실패: {exc}")
         active = bool(
             self._send_pwm and self._armed_by_us and self._started
             and not self._faulted and not self._estopped
@@ -504,6 +857,11 @@ class BaseNode(Node):
         """제어 동결 — armed 는 유지한 채 적분과 PWM 만 멈춘다."""
         self._started = False
         self._depth_ref_pa = None
+        # stop 뒤에는 wrench 를 무시하므로 마지막 명령 시각이 굳는다. 지우지 않으면
+        # 0.25 s 뒤 watchdog 이 "중립 정지" 를 한 번 더 찍는다 -- 이미 멈춘 뒤라
+        # 무해하지만, 로그를 읽는 사람은 고장으로 오독한다 (2026-09-02 실기).
+        self._last_cmd_monotonic = None
+        self._stopped_by_watchdog = False
         self._neutral_stop("stop 요청")
         res.success, res.message = True, "stopped (armed 유지)"
         return res
