@@ -327,7 +327,17 @@ class BaseNode(Node):
         self.create_timer(period, self._tick)
         limits = (f"선형 ±{self._gz_half_range:.1f} N"
                   if self._thruster_model == "gazebo_linear"
-                  else f"T200 테이블 {self._thruster.force_limits_n}")
+                  else (
+                      # force_limits_n 은 **전 전압 테이블 포락선**(보상 정규화
+                      # 전용, -49.4/+65.9 N)이라 실제 클램프가 아니다. 2026-09-02
+                      # 수조 세션에서 이 로그가 실제 클램프(-36.7/+47.2 N @14.8 V)
+                      # 와 다른 값을 찍어 "추진기 한계 불일치" 로 기록됐다 --
+                      # 불일치가 아니라 서로 다른 두 값이었다. 현장에서 보는
+                      # 로그에는 실제 클램프를 찍는다.
+                      f"T200 테이블, 클램프 {self._thruster.clamp_thrust(torch.full((1, 8), -1e9))[0, 0]:.1f}"
+                      f"/{self._thruster.clamp_thrust(torch.full((1, 8), 1e9))[0, 0]:+.1f} N"
+                      f" @{float(self._thruster.voltage[0]):.1f} V"
+                  ))
         self.get_logger().info(
             f"base_node 시작 — send_pwm={self._send_pwm} arm={self._arm_permitted} "
             f"watchdog={self._cmd_timeout:.3f}s, 추진기 {self._thruster_model} ({limits})"

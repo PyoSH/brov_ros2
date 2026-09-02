@@ -21,18 +21,17 @@
 유리하다 -- 대신 편향이 있다. 승격은 학습에 DVL 특성(``enable_dvl_realism``)을
 넣은 뒤의 일이다.
 
-EKF 융합을 밀어내지 않는지 확인할 것
-====================================
-A50 의 TCP 서버가 단일 클라이언트만 받는다면, 이 노드가 BlueOS 의 DVL
-extension 을 밀어낼 수 있다. 그러면 EKF 는 IMU dead reckoning 으로 떨어지고
-속도 추정이 조용히 나빠진다 -- **증상이 눈에 안 띄므로 반드시 확인해야 한다.**
+EKF 융합을 밀어낸다 — 2026-09-02 실기에서 확인된 사실
+====================================================
+이 노드가 A50 에 붙자(15:21:35) BlueOS DVL extension 이 멈췄고(15:22:53) FC 가
+`LOCAL_POSITION_NED` 를 끊었다(15:22:58, EKF `CONST_POS_MODE`). 노드를 내려도
+extension 은 회복되지 않았고, extension 재시작(runtime/restart_dvl.sh) 또는
+로봇 재부팅이 필요했다.
 
-확인 방법은 ``BrovState.ekf_velocity_variance`` 다(EKF_STATUS_REPORT 에서 온다).
-이 노드를 붙이기 전후로 비교해서 눈에 띄게 오르면 융합이 끊긴 것이다::
-
-    ros2 topic echo /brov/state --field ekf_velocity_variance    # 붙이기 전
-    ros2 run brov_control dvl_record_node --ros-args -p dvl_host:=192.168.2.95
-    ros2 topic echo /brov/state --field ekf_velocity_variance    # 붙인 후
+그래서 **EKF 위치가 필요한 주행에서는 켜지 말 것** — `pool_demo_a` 의 `dvl`
+기본값이 false 인 이유다. 감시는 `LOCAL_POSITION_NED` 의 존재로 한다
+(runtime/check_ekf.sh). 구판 docstring 이 지시하던 `ekf_velocity_variance`
+전후 비교는 무효다 — 사고 당시에도 0.0 이었다.
 
 이 노드는 split_stack 과 **별도로** 띄운다. 문제가 보이면 이것만 즉시 끄면
 되고, 제어 경로는 건드리지 않는다.

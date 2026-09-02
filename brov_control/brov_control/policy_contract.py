@@ -35,8 +35,15 @@ MK2_OBSERVATION_CONTRACT = "brov_velocity_observation_v2"
 # IS the WRENCH_SCALE constant below.  It differs from the deploy_* profiles only
 # in desired-state generation (Frenet-Serret q_d(t) per the paper) and in carrying
 # none of their added integrator rules -- neither of which this contract sees.
+# paper_delay_v1 added 2026-09-02.  paper_ref_v1 with action-delay(40~80 ms)/
+# observation-staleness domain randomization **at training time only** -- the
+# exported artifact is the same 16-D observation_contract v2 / 6-D action map,
+# so every field this contract checks is identical to paper_ref_v1.  Trained to
+# survive the measured deployment dead time (real robot 80 ms, 2026-09-02);
+# gate evidence in OceanRL_test step_2_BROV/DELAY_TRAINING_PLAN.md §5.
 MK2_ACCEPTED_PROFILES = (
     "paper_ref_v1",
+    "paper_delay_v1",
     "deploy_v2",
     "deploy_v3",
     "deploy_v4",

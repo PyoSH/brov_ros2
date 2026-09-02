@@ -51,6 +51,10 @@ ArduSub, 추진기, telemetry 를 왕복하는 데 시간이 걸린다.
 **실기는 SITL 보다 나쁠 것으로 본다.** Gazebo 는 추진기를 즉시 선형으로 두어
 위상을 18도 과소평가한다. 실기에는 T200 의 실제 동특성이 있다.
 
+> **2026-09-02 실측: τ = 80 ms** (A2-yaw, §3-C/3-D). SITL(60~80 ms)과 같은
+> 등급이었다. 진동도 예측대로 재현됐다(2.0~2.3 Hz, A1). 80 ms 의 구간별 분해
+> 계획은 `LATENCY_DECOMPOSITION_PLAN.md`.
+
 ---
 
 ## 준비물 확인
@@ -130,10 +134,16 @@ artifacts/policies/sim2swim_fixplant_wa0017_mk2_s42_i299/
 - **split stack 은 실기 첫 구동이다.** 이전 실기는 legacy 스택(`obs_node` +
   `policy_node_mk2`)이었다. 2026-08-31 에 arm 게이트, prepare 선행, start/stop
   lifecycle 을 새로 넣었다. §0단계를 건너뛰지 말 것.
-- **추진기 클램프 값 불일치.** `test_thruster_force_clamp_matches_inverse_envelope`
-  가 계속 실패한다 -- 제거된 다항식 모델의 +-51.5/64.1 N 을 단언하는데 T200
-  테이블은 -36.7/+47.2 N 을 준다. 실기는 `t200_table` 을 쓰므로 어느 쪽이 맞는지
-  확인이 필요하다. 이번 세션의 목적은 아니지만 기록해 둘 것.
+- **추진기 클램프 값 — 해소됨 (2026-09-02).** 세 숫자가 전부 실재했고 의미가
+  달랐다: ±51.5/64.1 N = 제거된 다항식 잔재(구 시험이 단언 → 시험 갱신으로
+  해소), −49.4/+65.9 N = `force_limits_n` 전 전압 포락선(보상 정규화 전용 —
+  구 `base_node` 로그가 이걸 찍어 오도 → 로그를 실제 클램프 표기로 수정),
+  **−36.7/+47.2 N @14.8 V = `clamp_thrust` 의 실제 배포 클램프**(전압 의존:
+  12.6 V −30.3/+38.8, 16.8 V −41.9/+54.5).
+- **`test_sim2swim_contract` 2건은 여전히 실패.** 2026-09-01 수조 실험 커밋이
+  case_a 프로파일의 `segment_length` 를 2.0→2.2 m 로 바꿨는데 a2 프로파일과
+  계약 시험은 안 바꿨다. 어느 값이 정본인지는 **사용자 결정 필요** — 코드 쪽을
+  임의로 맞추지 않고 남겨 둔다.
 - **dead time 반영 정책은 없다.** 이번 측정값이 나온 뒤에 만든다.
 
 ---
@@ -314,66 +324,12 @@ Enter 를 누르고 기체를 안전 영역 안에서 **위아래로 천천히 2
 > `SPEC_GRAV` 가 찍히고, `BrovState.depth_baro_instance` 에도 실린다. 그 값이
 > 위 표의 WATER instance 와 **다르면 진행하지 말 것.**
 
-#### 검사 스크립트 (구판, 참고용)
+#### (구판 pymavlink 스크립트는 삭제됨 — 2026-09-02)
 
-위 도구가 생기기 전에 쓰던 것이다. `base_node` 와 동시에 쓰면 MAVLink endpoint 가
-겹칠 수 있다 (`pymavlink` 필요).
-
-```python
-#!/usr/bin/env python3
-"""깊이 게이트 — BARO_PRIMARY 확인 + 세 SCALED_PRESSURE 반응 측정."""
-import time
-from pymavlink import mavutil
-
-CONN = "udpout:192.168.2.2:14550"     # split stack 과 동시에 쓰면 포트가 겹칠 수
-                                       # 있다. 필요하면 BlueOS 의 다른 endpoint 사용.
-m = mavutil.mavlink_connection(CONN)
-m.wait_heartbeat(timeout=20)
-print("heartbeat OK")
-
-# --- 파라미터 ---
-want = ["BARO_PRIMARY", "BARO_SPEC_GRAV", "BARO_PROBE_EXT",
-        "EK3_SRC1_POSZ", "EK3_SRC1_VELZ"]
-got = {}
-for n in want:
-    m.mav.param_request_read_send(m.target_system, m.target_component, n.encode(), -1)
-t0 = time.time()
-while time.time() - t0 < 15 and len(got) < len(want):
-    msg = m.recv_match(type="PARAM_VALUE", blocking=True, timeout=2)
-    if msg and msg.param_id.strip("\x00") in want:
-        got[msg.param_id.strip("\x00")] = msg.param_value
-for n in want:
-    print(f"  {n:16s} = {got.get(n, '수신 실패')}")
-
-# --- 세 SCALED_PRESSURE 를 한 지점에서 읽는다 ---
-def read_pressures(seconds=6.0):
-    out = {}
-    t0 = time.time()
-    while time.time() - t0 < seconds:
-        msg = m.recv_match(
-            type=["SCALED_PRESSURE", "SCALED_PRESSURE2", "SCALED_PRESSURE3"],
-            blocking=True, timeout=2)
-        if msg:
-            out[msg.get_type()] = msg.press_abs
-    return out
-
-input("\n기체를 얕은 기준 깊이에 두고 Enter: ")
-shallow = read_pressures()
-print("  ", shallow)
-input("정확히 1.00 m 더 깊게 내리고 Enter: ")
-deep = read_pressures()
-print("  ", deep)
-
-print("\n instance  메시지               dP [hPa]   기울기 [hPa/m]   판정")
-for i, name in enumerate(["SCALED_PRESSURE", "SCALED_PRESSURE2", "SCALED_PRESSURE3"]):
-    if name not in shallow or name not in deep:
-        print(f"  {i:8d}  {name:20s} 수신 없음")
-        continue
-    dp = deep[name] - shallow[name]
-    verdict = "WATER (깊이센서)" if abs(dp) > 50 else "dry/internal"
-    print(f"  {i:8d}  {name:20s} {dp:8.2f}   {dp:12.2f}   {verdict}")
-print("\nArduSub 변환 상수 98.0 hPa/m (9800 Pa/m / SPEC_GRAV=1.0)")
-```
+`diag_depth_gate` 가 대체했다. 구판은 두 지점 깊이차를 손으로 재야 했고, DVL
+확인용으로 함께 적혀 있던 `ekf_velocity_variance` 검사는 실기에서 **동작하지
+않는 것으로 판명**됐다(항상 0.0 — §2단계 참조). 필요하면 git 이력
+(106df62 이전)에 있다.
 
 #### 판정
 
@@ -401,28 +357,21 @@ ros2 topic echo /brov/state --field position   # z 가 1 m 만큼 변하는가
 
 ---
 
-### 2단계 — DVL 기록 붙이기 (선택, 권장)
+### 2단계 — DVL 기록 붙이기 (**기본 끔** — 2026-09-02 사고로 강등)
 
-**EKF 융합을 밀어낼 위험이 있다.** A50 의 TCP 서버가 단일 클라이언트만 받는다면
-우리 기록기가 BlueOS 의 DVL extension 을 밀어낼 수 있고, 그러면 EKF 가 IMU
-dead reckoning 으로 **조용히** 떨어진다. 화면상 아무 일도 안 일어난 것처럼
-보이므로 반드시 확인한다.
+**A50 에 붙으면 BlueOS DVL extension 이 밀려나고 EKF 위치가 죽는다 — 조건이
+아니라 확인된 사실이다** (아래 사고 기록). EKF 위치가 필요한 주행에서는 켜지
+말 것. `deadtime_test` 처럼 EKF 위치가 필요 없는 주행에서만 `dvl:=true`.
+
+감시는 `./runtime/check_ekf.sh` 로 한다 (`LOCAL_POSITION_NED` 부재가 신호다).
+구판이 지시하던 `ekf_velocity_variance` 전후 비교는 **무효** — 사고 당시에도
+0.0 이었다. `BrovState.msg` 의 해당 필드 주석도 이 사실을 따라 읽을 것.
 
 ```bash
-# 붙이기 전
-ros2 topic echo /brov/state --field ekf_velocity_variance
-
-# 붙이기
 ros2 run brov_control dvl_record_node --ros-args -p dvl_host:=192.168.2.95
-
-# 붙인 후 (같은 값이어야 한다)
-ros2 topic echo /brov/state --field ekf_velocity_variance
 ros2 topic echo /brov/dvl/sample --once      # connected: true, valid: true
+./runtime/check_ekf.sh                        # LOCAL_POSITION_NED 살아 있는지
 ```
-
-**분산이 눈에 띄게 오르면 융합이 끊긴 것이다. 즉시 DVL 노드를 끄고**, 이번
-세션에서는 DVL 기록을 포기한다. 제어 경로에는 영향이 없다(이 노드는 어떤 제어
-토픽도 발행하지 않는다).
 
 > **2026-09-02 확인됨 — 조건이 아니라 사실이다.** `dvl_record_node` 가 15:21:35 에
 > A50 에 붙었고, **15:22:53** 에 BlueOS DVL extension 의 `VISION_POSITION_DELTA` 와
