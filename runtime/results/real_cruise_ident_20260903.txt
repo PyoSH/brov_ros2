@@ -1,0 +1,32 @@
+[INFO] [1788439462.345744398] [rosbag2_storage]: Opened database 'runtime/bags/a3_delayA_straight_t50-20260903-172612/a3_delayA_straight_t50-20260903-172612_0.db3' for READ_ONLY.
+[INFO] [1788439462.999934247] [rosbag2_storage]: Opened database 'runtime/bags/a3_delayA_align_t50-20260903-173204/a3_delayA_align_t50-20260903-173204_0.db3' for READ_ONLY.
+==========================================================================
+bag: runtime/bags/a3_delayA_straight_t50-20260903-172612   활성 139s (앞 10 s 제외)
+재생 게이트: n=3469  max|dA|=2.68e-07  raw clip 0.6%   통과
+순항점 Jacobian (434 표본)   [τ=80 ms 문턱 3.52]
+     축    K_p 중앙               IQR  K_i(z_v)     문턱 대비
+ surge    -2.744 [  -2.79, -2.68]    -3.584      -22%
+  sway    -2.676 [  -2.83, -2.61]    -2.596      -24%
+ heave    -1.903 [  -1.93, -1.88]    -4.952      -46%
+2 Hz 대역 (1.8~2.6) 절대 RMS — 명령 / 응답
+  surge    6.53 N       0.226 m/s²
+  sway     2.88 N       0.140 m/s²
+  heave    3.84 N       0.152 m/s²
+  roll     0.43 N·m     0.833 rad/s²
+  pitch    0.41 N·m     0.845 rad/s²
+  yaw      0.29 N·m     0.550 rad/s²
+==========================================================================
+bag: runtime/bags/a3_delayA_align_t50-20260903-173204   활성 159s (앞 10 s 제외)
+재생 게이트: n=3965  max|dA|=6.46e-07  raw clip 3.8%   통과
+순항점 Jacobian (441 표본)   [τ=80 ms 문턱 3.52]
+     축    K_p 중앙               IQR  K_i(z_v)     문턱 대비
+ surge    -1.612 [  -1.84, -1.45]    -2.548      -54%
+  sway    -1.945 [  -2.14, -1.81]    -1.275      -45%
+ heave    -1.306 [  -1.43, -1.22]    -4.085      -63%
+2 Hz 대역 (1.8~2.6) 절대 RMS — 명령 / 응답
+  surge    3.58 N       0.161 m/s²
+  sway     5.31 N       0.287 m/s²
+  heave    4.26 N       0.147 m/s²
+  roll     2.19 N·m     2.670 rad/s²
+  pitch    0.66 N·m     1.239 rad/s²
+  yaw      1.22 N·m     1.111 rad/s²
