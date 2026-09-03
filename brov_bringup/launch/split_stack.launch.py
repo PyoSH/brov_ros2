@@ -136,7 +136,10 @@ def generate_launch_description() -> LaunchDescription:
                 "depth_source": cfg("depth_source"),
                 "send_pwm": cfg("send_pwm"),
                 "arm": cfg("arm"),
-                "telemetry_rate_hz": cfg("telemetry_rate_hz"),
+                # 25 처럼 소수점 없는 인자도 받도록 float 로 못 박는다
+                # (base_node 는 DOUBLE 로 선언한다).
+                "telemetry_rate_hz": ParameterValue(
+                    cfg("telemetry_rate_hz"), value_type=float),
                 "state_rate_hz": cfg("state_rate_hz"),
                 "wrench_command_timeout_s": cfg("wrench_command_timeout_s"),
             }],

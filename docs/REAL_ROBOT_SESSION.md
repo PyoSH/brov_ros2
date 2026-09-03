@@ -1,5 +1,7 @@
 # 실기 수조 세션 — 절차와 고려사항
 
+> **총정리 (세 세션, 질문→실험→결과):** [POOL_EXPERIMENTS_20260902-03.md](POOL_EXPERIMENTS_20260902-03.md). 4차 실행 기록은 이 문서 맨 아래.
+
 > 이 문서는 **실기를 돌리는 Ubuntu 랩톱의 Claude 가 읽는다.** 명령은 그대로
 > 복사해 쓸 수 있게 적었고, 검증된 것과 안 된 것을 구분해 표시했다.
 > 작성 2026-08-31. **2026-09-02 세션 결과와 학습 쪽 이관은
@@ -803,4 +805,347 @@ M2 ≥ 30 ms 면 온보드 이전 후보. **어느 쪽이든 M4 값이 학습 �
 delayA 주행 bag (+가능하면 같은 날 baseline bag)
 a1_band.py 출력 (A1 표와 같은 형식)
 M1/M2 출력, a2_yaw_m4 bag, m3/m4 출력
+```
+
+
+## 4차. G1 실기 확정 · 잔차 44 ms 의 소재 · 50 Hz 배포
+
+**배경.** 09-03 학습 PC 에서 SITL 로 G1·G2·G3 을 닫았다
+([sim2real_findings](sim2real_findings_20260902-03.md) §6-2b/c): FC 는 50 Hz 요청을
+지키고, 원시 센서 토픽은 100 Hz 폴링으로 분리돼 도착률이 그대로 보이며, DO_SET_SERVO
+와 RC override 는 차이가 없다. 09-03 실기 bag 의 transit 사전 분석은 틱 양자화
+때문에 **큐잉 폭 < 40 ms 상한**만 줬다(§6-2d). 대신 ArduPilot 소스에서 확정한 것이
+있다: RC override 는 50 Hz 로 표본화되고 servo 도장은 메시지 생성 시각이라, "FC 처리"
+에 구조적으로 평균 ~30 ms(RC 대기 10 + 슬롯 대기 20)가 들어 있다. 이번에 답할 것은
+셋이다: (1) 50 Hz 가 실기에서도 τ 를 깎는가, (2) 64.4 가 상행·하행·FC 처리로 어떻게
+나뉘는가, (3) 하행이 FC→RPi 인가 RPi→랩톱인가 — 이것이 온보드 이전의 가치 판정.
+
+**사전 등록 예측** (빗나가면 그대로 보고):
+1. A2-yaw τ: 25 Hz 85 → 50 Hz **~75 ms** (−8~−12). M3 도 같은 폭으로 준다.
+2. 세 조각(t25): 상행 ~10, FC 처리 **~30** (RC 표본화 10 + 슬롯 20), 하행 **~45** ms.
+   t50 에서 FC 처리만 ~10 준다. 빗나가면 FC 처리 안에 모르는 것이 더 있는 것.
+3. 하행 폭(p90−p10, 100 Hz 폴링 bag): < 10 ms 면 상수(직렬화/고정 홉), 20~35 면 burst 큐잉.
+4. RPi 프로브: 편도의 대부분이 FC→RPi 면 직렬/스케줄(온보드 이전 무효), RPi→랩톱
+   이면 라우터/이더넷(온보드 이전·전용 endpoint 유효).
+
+**주의.** FC 시계 offset 은 부팅 기준 — **로봇을 재부팅하면 Step 1 을 다시 잰다.**
+50 Hz 주행 중 QGC/Cockpit 접속 금지 (3차-B 와 같은 이유). `dvl:=false` 그대로.
+
+### Step 0 — FC 링크 종류 (수중 아님, 5 분)
+
+BlueOS → Autopilot 페이지에서 보드와 연결을 읽는다.
+- **Navigator** 면 ArduSub 가 RPi 위에서 돈다 → FC↔RPi 직렬 링크가 **없다** →
+  §6a 의 baud 가설은 기각. 상수는 RPi 부하·라우터·스케줄 쪽.
+- **Pixhawk** 면 USB 인지 UART 인지. UART 면 BlueOS → Parameters 에서 해당
+  `SERIALx_BAUD` 를 **읽기만** 한다. 115200 이면 §6a 의 주범 후보.
+
+### Step 1 — M1/M2 + 시계 offset (스택 없이, 30 s)
+
+```bash
+./runtime/m1m2_link.sh      # 마지막 줄 "--mode transit --offset <값>" 의 값을 적어 둔다
+OFF=<그 값>
+```
+
+### Step 2 — A2-yaw 25 vs 50 (G1 실기 확정, 2 × 40 s)
+
+```bash
+./runtime/a2_yaw.sh 25
+./runtime/a2_yaw.sh 50
+```
+50 Hz 주행 중 다른 터미널에서 (둘 다 `source env_native.sh` 뒤):
+```bash
+ros2 topic hz /brov/sensor/ahrs        # 50 이어야 한다. 25 면 G2 가 실기에서 안 먹은 것
+curl -s http://192.168.2.2:6040/v1/mavlink/vehicles/1/components/1/messages/SYS_STATUS \
+  | python3 -c "import sys,json; print('FC load %', json.load(sys.stdin)['message']['load']/10)"
+```
+분석 (t25, t50 각각 네 줄):
+```bash
+for T in 25 50; do
+  B=$(./runtime/latest_bag.sh a2_yaw_t$T); echo "##### t$T  $B"
+  ros2 run brov_base diag_loop_delay $B --axis yaw --open-loop --skip 3 --seconds 37   # τ
+  ros2 run brov_base diag_loop_delay $B --mode m3                                       # 명령→서보
+  ros2 run brov_base diag_loop_delay $B --mode m4                                       # 서보→자이로
+  ros2 run brov_base diag_loop_delay $B --mode transit --offset $OFF                    # 편도 절대값
+done 2>&1 | grep -v rosbag2 | tee runtime/results/g1_t25_t50_$(date +%Y%m%d).txt
+```
+**판정.** τ(t50) − τ(t25) 가 −8 ~ −12 ms 면 G1 실기 확정. 0 이면 hz 부터 본다.
+transit 의 "절대 d 중앙" 이 상수 A 의 크기 — Step 3 이 그것을 두 구간으로 나눈다.
+
+**64.4 ms 의 정체 — 여기서 세 조각으로 나눈다** (t25 로 09-03 과 같은 조건에서):
+
+```
+상행 (랩톱 → FC 수신)        ≈ M2 / 2                       (Step 1, 09-03: ~10 ms)
+하행 (FC 도장 → 랩톱 도착)   = transit 절대 d 중앙 (servo)   (Step 2, --offset)
+FC 처리 (RC 수신 → 서보 → 도장) = M3 − 상행 − 하행            (뺄셈)
+```
+
+세 줄의 합이 M3 (09-03: 85 ms) 이어야 한다. 이 중 **FC 처리** 가 wrapper 가 어쩔 수
+없는 몫이고, 하행은 Step 3 이 다시 FC→RPi / RPi→랩톱으로 가른다. t50 에서 FC 처리가
+~10 ms 줄면 그 몫은 스트림 슬롯 대기(양자화)였던 것이다.
+
+*도장의 뜻 (ArduPilot master 소스로 확정).* `SERVO_OUTPUT_RAW.time_usec` 은
+`AP_HAL::micros()` — **메시지를 만드는 순간**이다. 그래서 하행(transit)은 직렬화 이후만
+재고, 서보 쓰기 → 다음 스트림 슬롯의 대기(0~40 @25 Hz)는 "FC 처리" 에 들어간다.
+09-03 bag 에서 보였던 0/40 ms 두 봉우리는 스트림 위상이 아니라 **랩톱 25 Hz 틱의
+위상 wrap** 이었다(G2 수정 전 bag). 4차 bag 은 100 Hz 폴링이라 이 현상이 없어야 한다.
+
+### 결과 — Step 0·1·2 (2026-09-03 오후)   원본: `runtime/results/session4_20260903.txt`, `g1_t25_t50_20260903.txt`
+
+**Step 0.** Navigator. ArduSub 가 RPi 위에서 돈다 → FC↔RPi 직렬 링크 없음 → §6a baud
+가설 기각. "하행" 은 ArduSub → mavlink-router(localhost UDP) → 이더넷 전부.
+
+**Step 1.** M1 ping avg 5.3 ms. M2 TIMESYNC 중앙 20.7, p90 35.7 ms (09-03 새벽 20.6 과
+같음). 시계 offset ±9.2 ms → `OFF=1788414329.828408`. 상행 ≈ 10 ms.
+
+**Step 2.** 50 Hz 주행 중 ahrs 47 Hz 도착(G2 실기 확인), FC load 16.8 %.
+
+| | t25 | t50 | 차 | 비고 |
+|---|---|---|---|---|
+| τ 개루프 (사각파, 부그리드) | 50.7 | 55.8 | +5 | 봉우리 반폭 120 ms — **판정 불가**, chirp 로 |
+| M3 명령→서보 도착 | 80 (r .95) | **60** (r .96) | **−20** | 예측 −10 의 두 배 |
+| M4 서보→자이로 | 0 | 0 | 0 | |
+| 하행 절대 (transit servo 중앙) | 7.2 | 6.7 | 0 | ±9; 폭 9~12 = 폴링 바닥 |
+| **FC 처리** = M3 − 10 − 7 − 폴링 5 | **~58** | **~38** | −20 | |
+
+**판정.** 64 ms 의 정체는 **ArduSub 안(FC 처리)** 이다. 하행 7 + 상행 10 = 17 ms 만이
+링크의 몫이라 온보드 이전·라우터 교체·전용 endpoint(Step 4)는 **할 이유가 없다.**
+50 Hz 로 FC 처리가 20 줄었다 — 25 Hz 명령과 25 Hz 스트림의 위상 고정으로 슬롯 대기가
+평균 20 이 아니라 ~40 에 붙어 있었던 것으로 본다. t50 에 남은 ~38 중 구조적 설명
+(RC 표본화 10 + 루프 2.5 + 슬롯 10 ≈ 22)을 빼면 **~15~20 ms 미설명 → Step 4b 조건 성립.**
+정책 관점의 τ 변화는 사각파로는 못 가렸다 → chirp t25/t50 이 다음.
+
+### Step 2b — chirp t25 vs t50 (Step 2 의 τ 가 판정 불가라서 추가, 2 × 40 s)
+
+사각파 1 Hz 는 봉우리 반폭 120 ms 라 τ 를 못 가른다(Step 2 결과). 정책이 보는 τ 의
+25→50 비교는 chirp(0.5→8 Hz, 09-03 새벽 85.3 ms 와 같은 조건)로 한다.
+```bash
+KIND=chirp ./runtime/a2_yaw.sh 25      # bag: a2_yaw_t25_chirp
+KIND=chirp ./runtime/a2_yaw.sh 50      # bag: a2_yaw_t50_chirp
+```
+각 주행: A launch → B `./runtime/lifecycle.sh` → 40 s → B `./runtime/stop.sh` → A Ctrl+C.
+
+분석은 Step 4b 와 한 번에 (아래 Step 4b 의 루프). **판정.** chirp τ(t50) 가 85 → 75
+이하면 G1 실기 확정, 학습 주입 중심 = τ − 21. lag-0 상관이 음수인지도 본다(새벽 −0.205).
+
+### 결과 — Step 2b·4b (2026-09-03 16:51~)   원본: `g1_chirp_4b_20260903.txt`, `session4_20260903.txt`
+
+| | t25 chirp | t50 chirp | 새벽 chirp (25 Hz, 구 코드) |
+|---|---|---|---|
+| τ 개루프 (부그리드) | **112.0** | **79.7** | 85.3 |
+| r / 반폭 / lag-0 r | .89 / 70 / −.14 | .90 / 60 / −.09 | .83 / — / −.21 |
+| M3 명령→서보 도착 | 50 | 65 | 85 (틱 양자화 포함) |
+| τ − M3 (관측 쪽 대기) | 62 | 15 | ~0 |
+
+**발견 — 25 Hz 는 위상 고정이다.** 같은 25 Hz 설정에서 τ 가 85(새벽)/112(오후), M3 가
+80(사각파)/50(chirp) 으로 주행마다 다르다. 25 Hz telemetry 와 25 Hz 제어 틱이 같은 주기라
+서로의 위상이 주행 시작 순간에 굳고(상대 drift 15 ppm → 40 s 안에 안 움직인다), 액추에이션
+쪽 대기(서보 → 스트림 슬롯)와 관측 쪽 대기(ATTITUDE 슬롯 → state 틱)가 **각각 [0, 40] 안의
+상수**로 주행마다 다르게 잡힌다. jitter 가 아니라 주행별 상수 — chirp 봉우리가 날카로운
+이유. 50 Hz 면 각 [0, 20]. **t50 chirp τ ≈ 80 이 50 Hz 의 대푯값, 주행별 ±10.**
+학습 주입 중심 ≈ 80 − 21 = **59 ms**, DR 범위는 주행별 폭을 덮어야 한다.
+
+**Step 4b.** 도구가 고른 servo7(깊이유지 수직)은 채널 오선택. yaw 채널 재계산:
+
+| | rc_override t50 | do_set_servo t50 |
+|---|---|---|
+| servo1 전환 수 (명령 81) | 81 | 81 |
+| 전환 간격 p10 / 중앙 / p90 | 476 / 499 / 524 ms | **300 / 539 / 647 ms** |
+| M3 servo1 (r) | 60 (.95) | **140 (.78)** |
+
+명령은 전부 적용됐지만 **+80 ms 늦고 ±170 ms 요동**한다 — COMMAND_LONG 200 msg/s + ACK
+가 ArduSub 수신 경로에 줄을 선다. RC override 는 미설명 ~20 ms 의 범인이 아니고, 남은 것은
+ArduSub 내부(`rc_loop` 50 Hz + 스케줄)라 wrapper 로는 더 못 줄인다. **백엔드 교체 폐기.**
+
+transit 절대값은 이 세 bag 에서 무효 — offset 이 1.5 h 전 값(drift −15 ppm ≈ −80 ms)이고
+servo `time_usec` 이 uint32 wrap 됐다(도구에 보정 추가). 다음 주행 직전에 offset 을 다시 잰다.
+
+### Step 3 — RPi 프로브 (**선택으로 강등**, 2026-09-03 오후 — 별도 주행 없음, 다음 50 Hz 주행에 겹쳐 놓는다, 70 s)
+
+> Step 2 에서 하행 전체가 7 ms(±9) 로 나와 나눌 것이 없다. 온보드 이전·라우터 판정은
+> 이미 섰다. Step 2b·4b·5 가 끝나고 시간이 남을 때만.
+
+사전 (한 번): BlueOS → MAVLink Endpoints → 추가 **UDP Client → 127.0.0.1 : 14560**.
+(UDP **Server** 로 127.0.0.1 을 넣으면 "IP not available at any interface" 로 거부된다 —
+서버는 프로브 쪽이고 라우터는 그 주소로 **보내는** 클라이언트다. 127.0.0.1 이 안 되면
+192.168.2.2 로.) localhost 전용이라 랩톱 경로와 경쟁하지 않는다. 프로브를 로봇에 복사:
+```bash
+scp runtime/rpi_transit_probe.py pi@192.168.2.2:/tmp/
+```
+프로브는 수동 관측이라 어떤 주행이든 상관없다 — Step 2 의 50 Hz 가 이미 끝났으면
+**chirp t50 에 겹친다** (같은 bag 으로 τ 와 두 구간 분리를 동시에 얻는다). 로봇
+터미널에서 **먼저** 시작(TIMESYNC 로 RPi↔FC 시계 offset 을 스스로 잰다), 이어서 랩톱에서
+그 주행(`KIND=chirp ./runtime/a2_yaw.sh 50`)을 띄운다:
+```bash
+python3 /tmp/rpi_transit_probe.py --conn udpin:127.0.0.1:14560 --seconds 70 --out /tmp/rpi_transit.csv
+```
+끝나면 가져와서 같은 메시지끼리 맞춘다:
+```bash
+scp pi@192.168.2.2:/tmp/rpi_transit.csv runtime/results/rpi_transit_$(date +%Y%m%d).csv
+python3 runtime/analysis/transit_compare.py $(./runtime/latest_bag.sh a2_yaw_t50_chirp) \
+    runtime/results/rpi_transit_$(date +%Y%m%d).csv --offset-laptop $OFF \
+    | tee runtime/results/transit_split_$(date +%Y%m%d).txt
+```
+**판정.** 출력 마지막 줄이 상수의 소재를 말한다. FC→RPi 가 크면 Step 0 결과와
+맞춰 baud/스케줄, RPi→랩톱이 크면 Step 4.
+
+### Step 4 — 전용 endpoint A/B (선택, 10 분 — Step 3 이 RPi→랩톱을 지목했을 때만)
+
+BlueOS → MAVLink Endpoints → 추가 **udpin 0.0.0.0:14561** (랩톱 전용).
+```bash
+ros2 run brov_base diag_link_rtt --conn udpout:192.168.2.2:14561 --rounds 50   # M2
+CONN=udpout:192.168.2.2:14561 ./runtime/a2_yaw.sh 50                           # M3 (bag 은 새 타임스탬프)
+```
+14550 대비 M2/M3 이 준 만큼이 라우터 공유 큐 몫. 안 줄면 라우터 교체(§6a 4)도 안 한다.
+
+### Step 4b — DO_SET_SERVO 실기 A/B (조건부, 5 분 — t50 의 FC 처리가 20 ms 를 넘게 남을 때만)
+
+SITL 에서는 차이가 없었지만 SITL 도 같은 `rc_loop` 50 Hz 를 쓰므로 RC 표본화 몫은 그
+A/B 에 안 보였을 수 있다. 실기 FC 처리가 예측(슬롯 대기 제거 후 ~20)보다 크면 경로를
+바꿔 한 번 잰다. **진단 전용, 미션 금지.**
+```bash
+BACKEND=do_set_servo ./runtime/a2_yaw.sh 50          # bag: a2_yaw_t50_do_set_servo
+```
+분석 (Step 2b 의 두 bag 과 함께):
+```bash
+OFF=1788414329.828408
+for P in a2_yaw_t25_chirp a2_yaw_t50_chirp a2_yaw_t50_do_set_servo; do
+  B=$(./runtime/latest_bag.sh $P); echo "##### $P  $B"
+  ros2 run brov_base diag_loop_delay $B --axis yaw --open-loop --skip 3 --seconds 37
+  ros2 run brov_base diag_loop_delay $B --mode m3
+  ros2 run brov_base diag_loop_delay $B --mode transit --offset $OFF
+done 2>&1 | grep -v rosbag2 | tee runtime/results/g1_chirp_4b_20260903.txt
+```
+M3 가 10 ms 이상 줄면 RC override 입력 경로가 FC 처리의 일부였던 것 — 그때 액추에이션
+백엔드 교체를 별도 항목으로 올린다(ACTUATION_BACKEND_ROADMAP).
+
+### Step 5 — 50 Hz 배포 (20 분)
+
+```bash
+./runtime/a3_policy.sh delayA 50                    # align 60 s — 09-03 의 t25 와 짝
+HEADING=straight ./runtime/a3_policy.sh delayA 50   # straight 84 s — 실험 5 와 짝
+```
+분석 (09-03 bag 과 같은 55 s 창; 정지점 관측용 bag 은 09-03 것을 그대로 쓴다):
+```bash
+A=runtime/bags/a3_delayA-20260903-010900; B=$(./runtime/latest_bag.sh a3_delayA_align_t50)
+A1_SECONDS=55 python3 runtime/analysis/a1_saturation.py $A $B \
+    runtime/bags/a2_yaw-20260903-012136 runtime/bags/deadtime_heave delayA_t25 delayA_t50 1.0 1.0
+A1_SECONDS=55 python3 runtime/analysis/a1_band.py $A $B delayA_t25 delayA_t50
+A=runtime/bags/a4_delayA_straight; B=$(./runtime/latest_bag.sh a3_delayA_straight_t50)
+A1_SECONDS=80 python3 runtime/analysis/a1_band.py $A $B straight_t25 straight_t50
+A1_SECONDS=80 python3 runtime/analysis/a1_drift.py $A $B straight_t25 straight_t50
+```
+**판정 (실험 5 대비).** surge 2 Hz 명령 6.7 N → **< 5 N** 이면 상수 지연 10 ms 가
+surge limit cycle 을 건드린 것. 그대로면 남은 길은 지연 DR 확대(학습 PC)뿐이다.
+속도 0.17 → ≥ 0.2 m/s 가 수용 기준.
+
+### 결과 — Step 5 **1차 시도** (17:05~17:11, 벽·발산으로 재실행됨)   원본: `a5_policy_t50_20260903.txt`
+
+offset 재측정(17:07, +18.9 ms / 103 min = +3.1 ppm)으로 오후 bag 전부의 transit 절대값을
+복구했다: **하행 5~14 ms, 대표 ~10** (폴링 바닥 포함). 세 조각 확정 — 상행 10 / 하행 ~10 /
+나머지는 ArduSub 안.
+
+**straight (실험 5 t25 vs t50, 1.8~2.6 Hz 명령 대역)**
+
+| 축 | t25 | t50 | 비 |
+|---|---|---|---|
+| **surge** | 5.69 N | **5.75 N** | **×1.01** |
+| sway | 2.37 | 2.19 | ×0.92 |
+| heave | 3.85 | 3.35 | ×0.87 |
+| yaw | 0.34 N·m | 0.33 | ×0.97 |
+
+**50 Hz 로 surge 2 Hz 는 안 움직였다.** 사전 등록대로 판정: τ 의 평균 10 ms 는 surge limit
+cycle 의 변수가 아니고, 남은 길은 **지연 DR 확대(학습 PC)** 다. EKF 발산 없음, |ω_yaw| 0.08.
+
+align 은 3 회 시도(13 s 중단 / 41 s / 44 s). **사유: 직진 거리가 계속 바뀌어 벽에 부대끼고
+EKF 가 발산해 두 번 재실행.** 그래서 마지막 bag 의 surge 포화 34 %·평균 행동 +0.43·
+v_e −0.10 은 벽 접촉·발산 구간이 섞인 값이다 — **정책 비교로 쓰지 않는다.** 그 bag 의 EKF
+위치 범위는 대각 2.5 m — 1.5 m 다리 미션이 EKF 상 2.5 m 직선으로 보였다(거리 과대추정 → 벽).
+align 의 t25/t50 비교는 DVL 이 고쳐진 뒤에만 의미가 있다.
+
+**"직진 거리가 다리마다 다르다" — EKF 탓이 맞다.** straight t50 의 waypoint 전환 13 회 중
+2~13 번째 다리는 EKF 이동거리가 **전부 0.93~0.96 m, 4 s** 로 균일하다(leg 1.5 − reach
+0.3 − 앞 다리 overshoot). 추정은 균일한데 눈으로 본 실제가 달랐다면 틀린 쪽은 추정이다.
+DVL `velocity_valid` 61 % 상태에서 EKF 가 IMU 적분으로 메우는 구간의 속도 오차가 다리마다
+달라 같은 "0.9 m" 가 다른 실제 거리가 된다. 이 세션에는 A50 REST 폴링이 없어 어느 다리에서
+DVL 이 빠졌는지는 못 본다 — Step 6 의 폴링을 straight 주행에 겹치면 다리별로 대조된다.
+
+### 세부 — 1차 시도 두 bag (align 17:08, straight 17:09 — 벽에 닿은 주행)   원본: `a5_detail_20260903.txt`
+
+**straight t50, 다리별.** 1~12 번째 다리는 각 4.0~4.5 s, EKF 거리 0.92~0.97 m, 몸체 surge
+±0.225~0.228 m/s(목표의 90 %), sway 0.02~0.03, |ω| 0.07~0.19, 행동 포화 0~6 %. 자유 주행
+중의 정책은 교과서다. 13 번째 다리(58 s~)부터 surge 포화 78→100 %, 속도 −0.04 = **벽에 붙어
+미는 구간**.
+
+**"yaw 순증 +76°" 는 drift 가 아니다.** EKF yaw 는 0~55 s 동안 ±2°/10 s 로 고정이고, 55 s
+이후에만 +40/+35°/10 s 로 돈다 — 벽에 눌려 돌아간 것. 09-03 새벽 straight t25 도 같은 모양
+(0~50 s 고정, 60~80 s 급증)이라 그때도 끝에 벽이었다.
+
+**EKF 는 방향은 맞고 거리 축척이 틀렸다, 그것도 비대칭으로.** 다리별 EKF 변위 방향과 EKF
+yaw 의 차는 전진 +1~+8°, 후진 180±7° — 위치와 자세는 서로 일관한다. 그런데 EKF 는 전진
+0.94 / 후진 0.93 m 로 대칭인데 실제 로봇은 한쪽 끝벽으로 55 s 에 ≥0.9 m 걸어갔다 — 다리쌍당
+~0.15 m, **15 % 비대칭 속도 오차**. 가설: A50 beam3 상시 무효 → 3-빔 속도 해 → 진행
+방향에 따른 편향. A50 폴링(Step 6)이 있어야 확정된다.
+
+**align t50.** EKF 위치 스텝 >5 cm/tick 이 17 개, **전부 3.2~5.9 s — 바닥에서 뜨는 순간**
+(바닥 근접에서 DVL 무효 → 뜨면서 재수렴). 선회가 든 다리 1·3 은 변위 방향이 yaw 와
++21° / +52° 어긋난다(선회 중 EKF 위치가 옆으로 샘). 3 번째 다리(19 s~)부터 벽. 깊이는 EKF z
+0.82→0.30 과 압력 Δ−0.50 m 가 일치.
+
+**결론.** 정책과 guidance 는 시키는 대로 한다. 실기 재현의 병목은 (1) EKF 거리 축척의
+비대칭, (2) 이륙 순간의 위치 점프 — 둘 다 DVL 이다. align 은 여기에 선회 중 위치 오차가
+겹친다. **A50(beam3) 점검이 다음 실기의 1 번이다.**
+
+### 결과 — Step 5 **최종** (straight 17:26, align 17:32)   원본: `a5_detail_straight_1726_20260903.txt`, `a5_detail_align_1732_20260903.txt`
+
+재실행 순서: straight 17:09(벽) → 17:23·17:25(**DVL 작동 불가로 EKF 메시지가 끊겨 5 s 만에 중단**)
+→ **17:26 정상 170 s**; align 17:05·17:07·17:08(벽·발산) → **17:32 정상 173 s**. 이 둘이 오늘의
+대표 주행이다. 17:23/17:25 는 DVL 이 빠지는 순간을 직접 본 것이다 — 아래 "간헐적" 의 증거.
+
+**straight t50 (154 s, 34 다리).** 모든 다리가 4.0~4.7 s / 0.92~0.96 m / ±0.22 m/s, 포화 0~6 %,
+|ω| 0.1~0.3, yaw 순증 +8°, EKF 범위 0.61×1.28 m, 벽 접촉 1 %. 오늘까지 가장 긴 깨끗한 주행.
+
+| 축, 1.8~2.6 Hz 명령 대역 | 실험 5 t25 (80 s) | **t50 17:26 (80 s)** | 비 |
+|---|---|---|---|
+| **surge** | 5.69 N | **6.50 N** | **×1.14** |
+| sway | 2.37 | 3.14 | ×1.33 |
+| heave | 3.85 | 4.30 | ×1.12 |
+| yaw | 0.34 N·m | 0.32 | ×0.94 |
+
+**50 Hz 는 2 Hz 를 줄이지 않는다 — 두 번째 확인.** 남은 길은 지연 DR 확대뿐.
+
+**align t50 (173 s, 24 다리).** 발산 없음, 다리 5~9 s, v_surge 0.17~0.25, 포화 surge 0~9 %
+(다리 12 만 36 %), 마지막 5 s 만 sway/yaw 포화(끝). 09-03 새벽 t25 와 같은 55 s 창 비교: 포화
+surge 7→5 %, 2 Hz surge ×0.56 / sway ×0.38 / heave ×0.55 / yaw ×0.54, |ω| roll·pitch 절반, 속도
+0.097→0.183 m/s, sway RMS 0.69→0.09, 발산 78 s → 없음(168 s). **단, t25 쪽은 DVL 이 나빠
+발산하던 주행이라 이 개선의 대부분은 telemetry 가 아니라 EKF 상태 차이다.** 순수 telemetry
+효과는 straight 의 답(없음)을 따른다.
+
+**EKF 벽 문제는 간헐적이다.** 정상 시도 4 회 중 2 회(17:08, 17:09)에서 55~60 s 안에 벽,
+이후 2 회(17:26, 17:32)는 150 s 이상 깨끗. 같은 자리·같은 설정.
+
+**A50 폴링 (Step 6, `a50_poll_straight_t50.log` — 이름과 달리 align 17:32 의 앞 ~100 s).**
+바닥 altitude 0.04 m (< 최소 0.05) → 정지 lock 불가 → 이륙 10 s 간 valid 44 %; 순항 valid
+**82~88 %**, 4 빔 96~100 %, |v| 0.24 = EKF 0.22. "beam3 상시 무효" 는 바닥에서만의 현상이었고
+이륙 순간의 EKF 위치 점프가 그 결과다. 새벽 61 %(발산) 대 오늘 82~88 %(173 s 정상) —
+**순항 valid ≥ ~80 % 를 정상 주행의 게이트로 쓴다.** 17:23/17:25 의 완전 상실은 이 log 밖이며
+센서(4 빔 정상)보다 BlueOS extension/TCP 경로가 의심된다.
+
+### Step 6 — A50 (수중 밖, 선택)
+
+beam3 가 정지 시 상시 무효였다. 렌즈 오염·장착 높이를 눈으로 본다. 주행 중 상태는
+슬롯을 안 쓰는 REST 폴링으로 (a3 와 동시에 다른 터미널):
+```bash
+for i in $(seq 300); do curl -s -m 1 http://192.168.2.95/api/v1/velocity; echo; sleep 0.2; done \
+  > runtime/results/a50_poll_$(date +%Y%m%d).log
+```
+
+## 가져올 것 (4차)
+
+```
+Step 0 의 보드/링크 종류 (한 줄)
+m1m2 출력 (offset 값 포함)
+a2_yaw_t25 / a2_yaw_t50 bag, g1_t25_t50_*.txt
+rpi_transit_*.csv, transit_split_*.txt
+a3_delayA_align_t50 / a3_delayA_straight_t50 bag, a1_saturation·a1_band·a1_drift 출력
+(선택) 14561 endpoint 의 M2/M3, do_set_servo 의 M3
 ```

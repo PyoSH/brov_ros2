@@ -1,0 +1,111 @@
+=== a1_saturation align: delayA_t25(09-03 새벽) vs delayA_t50 ===
+
+=== delayA_t25  (1375 명령, 55s) ===
+(a) 행동 포화 |a|>=0.99  : surge    7%  sway    4%  heave    1%  roll    0%  pitch    0%  yaw   18%
+    행동 평균 a=w/(scale*g): surge +0.10  sway -0.10  heave -0.08  roll +0.01  pitch -0.03  yaw -0.10
+(b) 관측 1375개: v_e 평균 [-0.002  0.001 -0.001]  |v_e| RMS [0.153 0.097 0.06 ]
+    z_v 평균 [ 0.09  0.04 -0.17]  |z_v|>=4.9 비율 [0. 0. 0.]%
+    z_q 평균 [ 0.18 -0.39 -1.96]  |z_q|>=4.9 비율 [0. 0. 0.]%
+    omega RMS [0.5  0.4  1.04] rad/s
+(c) 추진기 클램프(-49/66 N) 비율: T1   3% T2  10% T3   2% T4   2% T5   0% T6   0% T7   1% T8   1%
+
+=== delayA_t50  (785 명령, 31s) ===
+(a) 행동 포화 |a|>=0.99  : surge   34%  sway    1%  heave    0%  roll    0%  pitch    1%  yaw    8%
+    행동 평균 a=w/(scale*g): surge +0.43  sway -0.07  heave -0.10  roll -0.02  pitch +0.09  yaw -0.14
+(b) 관측 785개: v_e 평균 [-0.096 -0.008 -0.021]  |v_e| RMS [0.185 0.081 0.068]
+    z_v 평균 [-0.11 -0.15 -0.14]  |z_v|>=4.9 비율 [0. 0. 0.]%
+    z_q 평균 [-0.11 -0.02 -0.21]  |z_q|>=4.9 비율 [0. 0. 0.]%
+    omega RMS [0.25 0.28 0.7 ] rad/s
+(c) 추진기 클램프(-49/66 N) 비율: T1  16% T2   2% T3   1% T4   2% T5   0% T6   0% T7   0% T8   0%
+
+=== (d) 개루프 기준: A2 yaw / deadtime heave 의 1.8~2.6 Hz 대역 (명령에 2 Hz 가 없는데 응답에 있으면 기계적) ===
+  A2 yaw          명령 2Hz대역   0.03  (1Hz대역   0.45)   응답 2Hz대역  0.049  (1Hz대역  0.517)
+  deadtime heave  명령 2Hz대역   1.12  (1Hz대역  17.94)   응답 2Hz대역  0.070  (1Hz대역  0.450)
+
+=== a1_band align ===
+분석 구간: delayA_t25 55s, delayA_t50 31s   (1.8~2.6 Hz 대역 RMS)
+
+축                    명령 대역 RMS   @Hz      응답 대역 RMS   @Hz     명령 평균    명령 전체RMS
+surge  delayA_t25       6.74   N  2.15     0.281   m/s²  1.84     +8.61       36.08
+surge  delayA_t50       3.71   N  1.85     0.125   m/s²  2.01    +36.24       42.81
+       비(B/A)       명령 대역 x0.55   응답 대역 x0.45
+
+sway   delayA_t25      10.83   N  1.96     0.641   m/s²  1.96     -8.41       28.90
+sway   delayA_t50       3.37   N  1.82     0.126   m/s²  1.82     -6.15       25.78
+       비(B/A)       명령 대역 x0.31   응답 대역 x0.20
+
+heave  delayA_t25       7.87   N  1.96     0.297   m/s²  1.84     -9.01       23.57
+heave  delayA_t50       3.50   N  2.52     0.092   m/s²  2.45    -11.50       20.75
+       비(B/A)       명령 대역 x0.44   응답 대역 x0.31
+
+yaw    delayA_t25       1.68 N*m  2.09     1.664 rad/s²  1.95     -2.25        9.54
+yaw    delayA_t50       0.94 N*m  1.82     0.454 rad/s²  1.91     -3.13        8.18
+       비(B/A)       명령 대역 x0.56   응답 대역 x0.27
+
+heave 명령 평균 delayA_t25: -9.01 N  -> 수직 추진기당 -2.25 N  (deadband 가장자리 ~0.45 N)
+heave 명령 평균 delayA_t50: -11.50 N  -> 수직 추진기당 -2.88 N  (deadband 가장자리 ~0.45 N)
+
+straight t50 bag: /home/pyo/BROV/brov_ros2/runtime/bags/a3_delayA_straight_t50-20260903-170942
+=== a1_band straight ===
+분석 구간: straight_t25 79s, straight_t50 70s   (1.8~2.6 Hz 대역 RMS)
+
+축                    명령 대역 RMS   @Hz      응답 대역 RMS   @Hz     명령 평균    명령 전체RMS
+surge  straight_t25       5.69   N  1.94     0.201   m/s²  1.94    -21.18       40.62
+surge  straight_t50       5.75   N  1.93     0.201   m/s²  1.97    -16.72       40.27
+       비(B/A)       명령 대역 x1.01   응답 대역 x1.00
+
+sway   straight_t25       2.37   N  1.90     0.151   m/s²  2.24    +30.83       40.19
+sway   straight_t50       2.19   N  1.86     0.096   m/s²  1.86     -0.99        8.17
+       비(B/A)       명령 대역 x0.92   응답 대역 x0.64
+
+heave  straight_t25       3.85   N  1.88     0.140   m/s²  1.88    -27.72       44.70
+heave  straight_t50       3.35   N  1.93     0.121   m/s²  1.84    -16.93       29.65
+       비(B/A)       명령 대역 x0.87   응답 대역 x0.86
+
+yaw    straight_t25       0.34 N*m  2.01     0.513 rad/s²  1.81     -4.00        8.45
+yaw    straight_t50       0.33 N*m  1.86     0.441 rad/s²  2.52     -2.38        6.28
+       비(B/A)       명령 대역 x0.97   응답 대역 x0.86
+
+heave 명령 평균 straight_t25: -27.72 N  -> 수직 추진기당 -6.93 N  (deadband 가장자리 ~0.45 N)
+heave 명령 평균 straight_t50: -16.93 N  -> 수직 추진기당 -4.23 N  (deadband 가장자리 ~0.45 N)
+
+=== a1_drift straight ===
+
+=== straight_t25  84s ===
+  구간    yaw율(중앙)  |ω|RMS   위치이동/구간   누적경로   수조밖?
+   0-15s       -0°/s   0.26      1.16 m        5.0 m    x
+  15-30s       -0°/s   0.23      0.28 m        4.0 m     
+  30-45s       +0°/s   0.23      0.30 m        3.9 m     
+  45-60s       -0°/s   0.24      0.76 m        3.1 m     
+  60-75s       +4°/s   0.42      1.10 m        4.4 m    x
+  75-90s       +1°/s   0.11      0.41 m        0.9 m     
+  전체: 위치 범위 x 1.58  y 1.70 m   (수조 안전영역 3.3×1.1 m)
+        yaw 순증 +78°,  |ω_yaw| RMS 0.16 rad/s
+
+=== straight_t50  75s ===
+  구간    yaw율(중앙)  |ω|RMS   위치이동/구간   누적경로   수조밖?
+   0-15s       -0°/s   0.12      1.18 m        4.7 m    x
+  15-30s       -0°/s   0.16      0.49 m        3.7 m     
+  30-45s       +0°/s   0.17      0.27 m        3.8 m     
+  45-60s       +0°/s   0.19      0.51 m        3.6 m     
+  60-75s       +5°/s   0.15      0.61 m        1.8 m     
+  전체: 위치 범위 x 0.93  y 1.32 m   (수조 안전영역 3.3×1.1 m)
+        yaw 순증 +76°,  |ω_yaw| RMS 0.08 rad/s
+
+=== a1_legs align (전환 수·속도) ===
+
+=== A(기준) (83s) ===
+  waypoint 전환 11회 -> 다리당 평균 7.6s   (leg L 을 0.25 m/s 로 직진하면 L/0.25 s)
+  실제 body 속도  surge 평균 +0.097 m/s (RMS 0.403)   sway RMS 0.686   heave RMS 0.101
+  desired v_d_b 평균 [0.162 0.019 0.001]  |v_d| 평균 0.250 m/s
+  roll  명령 2Hz대역  4.20 N*m (평균 +1.30, 전체RMS  7.04)   각가속도 2Hz대역  4.90 rad/s²
+  pitch 명령 2Hz대역  1.34 N*m (평균 -1.55, 전체RMS  3.93)   각가속도 2Hz대역  2.17 rad/s²
+  yaw   명령 2Hz대역  1.60 N*m (평균 -0.01, 전체RMS 11.23)   각가속도 2Hz대역  1.66 rad/s²
+
+=== B(비교) (31s) ===
+  waypoint 전환 2회 -> 다리당 평균 15.7s   (leg L 을 0.25 m/s 로 직진하면 L/0.25 s)
+  실제 body 속도  surge 평균 +0.118 m/s (RMS 0.190)   sway RMS 0.085   heave RMS 0.052
+  desired v_d_b 평균 [ 0.214 -0.016 -0.005]  |v_d| 평균 0.250 m/s
+  roll  명령 2Hz대역  0.29 N*m (평균 -0.44, 전체RMS  1.84)   각가속도 2Hz대역  0.43 rad/s²
+  pitch 명령 2Hz대역  0.30 N*m (평균 +1.26, 전체RMS  3.19)   각가속도 2Hz대역  0.41 rad/s²
+  yaw   명령 2Hz대역  0.94 N*m (평균 -3.13, 전체RMS  8.18)   각가속도 2Hz대역  0.45 rad/s²

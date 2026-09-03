@@ -226,11 +226,17 @@ def analyse_transit(sv, gy, offset_s=None):
     두 토픽(servo/ahrs)의 중앙값 차는 FC 가 burst 안에서 두 메시지를 내보내는
     순서·간격의 흔적이다 -- 직렬 대역폭이 좁을수록 벌어진다.
     """
-    out = {}
+    out, raw = {}, {}
     for name, arr in (("servo", sv), ("ahrs", gy)):
         d = arr[:, 0] - arr[:, 1]          # 도착(랩톱) − FC stamp
         if offset_s is not None:
             d = d - offset_s
+            # SERVO_OUTPUT_RAW.time_usec 는 uint32 µs — FC 부팅 71.6 분마다 wrap
+            # 한다 (09-03 오후 실기: 절대 d 가 4294994 ms 로 나옴). 절대값에서만
+            # 2^32 µs 의 정수배를 걷어낸다 (상대 분포는 영향 없음).
+            wrap = 2**32 / 1e6
+            d = d - np.round(np.median(d) / wrap) * wrap
+        raw[name] = d
         # **detrend 필수.** FC 시계와 랩톱 wall 은 속도가 다르다(실기 크리스털
         # 수십 ppm, SITL 은 RTF 오차로 ~0.3% 실측). 그 선형 drift 가 큐잉으로
         # 오독된다 -- 음성 대조군(직결)에서 실제로 p90 200 ms 가짜 큐잉이 나와
@@ -254,24 +260,34 @@ def analyse_transit(sv, gy, offset_s=None):
             base = slope * t + intercept
         resid = d - base
         rel = resid - resid.min()
-        out[name] = d
+        # 실기 bag(09-03 a2_yaw)에서 잡힌 함정: 도착 시각이 25 Hz 틱으로 양자화된
+        # bag(G2 수정 전)에서 틱 위상이 wrap 하면 소수 표본이 정확히 한 틱(40 ms)
+        # 다른 bin 에 떨어진다. 그러면 min 이 그 이상치가 되어
+        # "min 대비" 수치가 통째로 40 ms 로 뜬다 -- 큐잉이 아닌데 큐잉으로
+        # 읽힌다. 큐잉의 증거는 **덩어리의 폭**(p90−p10)이라 판정은 그것으로.
+        width = (np.percentile(rel, 90) - np.percentile(rel, 10)) * 1000
         print(f"  {name:6s} n={len(d):5d}  시계 drift {slope*1e6:+8.1f} ppm   "
               f"큐잉(detrend 후 min 대비): 중앙 {np.median(rel)*1000:5.1f}  "
               f"p10 {np.percentile(rel,10)*1000:5.1f}  "
-              f"p90 {np.percentile(rel,90)*1000:5.1f}  최대 {rel.max()*1000:6.1f} ms")
+              f"p90 {np.percentile(rel,90)*1000:5.1f}  최대 {rel.max()*1000:6.1f} ms"
+              f"   폭(p90−p10) {width:5.1f} ms")
+        if np.median(rel) * 1000 > 15.0 and width < 15.0:
+            print(f"         ↳ 덩어리가 min 보다 {np.median(rel)*1000:.0f} ms 위에 몰려 있다 "
+                  "— 소수의 이른 표본(틱 위상 wrap)이지 큐잉이 아니다")
         if offset_s is not None:
             print(f"         절대 d(drift 미보정): 중앙 {np.median(d)*1000:8.1f}  최소 {d.min()*1000:8.1f} ms")
         out[name] = resid
-    # 토픽 간 차는 공통 drift 가 상쇄되도록 detrend 잔차가 아니라 원시 d 로
-    # 재계산하면 안 된다(위에서 resid 로 교체됨) — 같은 창의 잔차 중앙 차면 충분.
-    dm = (np.median(out["servo"]) - np.median(out["ahrs"])) * 1000
+    # 토픽 간 차는 **원시 d** 로 잰다 -- 잔차는 구성상 중앙이 0 이라 항상 +0.0
+    # 이 나왔다(09-03 실기 bag 에서 발견). 공통 drift 는 같은 시간축이라 상쇄된다.
+    dm = (np.median(raw["servo"]) - np.median(raw["ahrs"])) * 1000
     print(f"  토픽 간 중앙 차 (servo − ahrs): {dm:+.1f} ms  (burst 내 순서·직렬화 간격의 흔적)")
-    spread = max(float(np.percentile(v - v.min(), 90)) for v in out.values()) * 1000  # noqa: E501 — detrend 잔차 기준
+    spread = max(
+        float(np.percentile(v, 90) - np.percentile(v, 10)) for v in out.values()) * 1000
     if spread > 15.0:
-        print(f"  ** 큐잉 성분 p90 {spread:.0f} ms — 잔차가 '대기'로 생기고 있다. "
+        print(f"  ** 큐잉 성분 폭 {spread:.0f} ms — 잔차가 '대기'로 생기고 있다. "
               "대역폭/라우터(§6a)를 볼 것. **")
     else:
-        print(f"  큐잉 성분 p90 {spread:.0f} ms — 경로가 평평하다(상수 지연 지배).")
+        print(f"  큐잉 성분 폭 {spread:.0f} ms — 경로가 평평하다(상수 지연 지배).")
     return out
 
 

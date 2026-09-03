@@ -1,0 +1,184 @@
+##### a2_yaw_t25_chirp  /home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t25_chirp-20260903-165133
+=== dead time 진단   bag=/home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t25_chirp-20260903-165133   축=yaw
+분석 구간 37.0s  (control_active 후 3s 제외, 이후 37s 만 사용)
+  /brov/cmd/wrench     n=  925  dt 중앙  40.0 ms ( 25.0 Hz)  p90  40.4 ms
+  /brov/state          n=  925  dt 중앙  40.0 ms ( 25.0 Hz)  p90  41.0 ms
+
+dead time (명령 -> 가속도 교차상관)
+  피크 lag = 120.0 ms,  r = +0.891   (부그리드 보정 112.0 ms)
+  봉우리 반폭  70.0 ms,  대비(peak−min) 1.41   -- 반폭이 좁고 대비가 클수록 τ 가 그 자리에 실제로 있다
+  lag 프로파일:
+       0.0 ms : r = -0.140
+      20.0 ms : r = -0.148
+      40.0 ms : r = -0.030
+      60.0 ms : r = +0.251
+      80.0 ms : r = +0.611
+     100.0 ms : r = +0.863
+     120.0 ms : r = +0.891
+     140.0 ms : r = +0.639
+     160.0 ms : r = +0.200
+     180.0 ms : r = -0.216
+     200.0 ms : r = -0.477
+     220.0 ms : r = -0.517
+     240.0 ms : r = -0.388
+     260.0 ms : r = -0.240
+     280.0 ms : r = -0.152
+     300.0 ms : r = -0.144
+
+지배 주파수   명령  1.46 Hz (전력비  0.7%)   응답  3.46 Hz (전력비  0.9%)
+진동대 1~5 Hz  명령  1.46 Hz  RMS   0.25 N*m   응답  3.46 Hz  RMS  0.399 rad/s^2
+  (개루프 — 이 값은 주입한 여기의 주파수이지 폐루프 진동이 아니다)
+  여기가 광대역이다(지배 주파수 전력비 0.7%) — chirp 계열. 협대역 분해능 한계는 적용되지 않고, 위의 **실측 반폭**이 정밀도다.
+
+위상 예산  (I_eff = 0.559 kg*m^2, 제어주기 40 ms)
+  -180도 교차 예측 주파수 =  1.71 Hz
+  (개루프이므로 실측 지배 주파수와의 비교는 하지 않는다 — 폐루프 진동이 아니다)
+  이 주파수에서 |L|=1 이 되는 이득 문턱 K_p =  0.27
+    (학습된 정책 실측 K_p ~ 4.5 (surge/heave, 순항 관측) -- 넘으면 진동 조건 성립)
+    기체(관성)         -90.0도
+    dead time      -73.7도
+    ZOH            -12.3도
+    정책              -4.0도
+=== 지연 분해 M3   bag=/home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t25_chirp-20260903-165133
+M3  명령→서보출력 도착   lag =  50.0 ms,  r = +0.951   (채널 servo2, n=1414/1358)
+       0.0 ms : r = +0.861
+      30.0 ms : r = +0.932
+      60.0 ms : r = +0.945
+      90.0 ms : r = +0.888
+     120.0 ms : r = +0.819
+     150.0 ms : r = +0.795
+     180.0 ms : r = +0.805
+     210.0 ms : r = +0.809
+     240.0 ms : r = +0.794
+     270.0 ms : r = +0.783
+     300.0 ms : r = +0.787
+=== 편도 transit 분해   bag=/home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t25_chirp-20260903-165133
+  servo  n= 1451  시계 drift    -14.2 ppm   큐잉(detrend 후 min 대비): 중앙  11.3  p10   8.0  p90  20.2  최대   46.2 ms   폭(p90−p10)  12.2 ms
+         절대 d(drift 미보정): 중앙 4294994.4  최소 4294987.9 ms
+  ahrs   n= 1451  시계 drift    -17.3 ppm   큐잉(detrend 후 min 대비): 중앙  10.7  p10   8.5  p90  19.8  최대   45.2 ms   폭(p90−p10)  11.3 ms
+         절대 d(drift 미보정): 중앙     26.6  최소     20.8 ms
+  토픽 간 중앙 차 (servo − ahrs): +4294967.8 ms  (burst 내 순서·직렬화 간격의 흔적)
+  큐잉 성분 폭 12 ms — 경로가 평평하다(상수 지연 지배).
+##### a2_yaw_t50_chirp  /home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t50_chirp
+=== dead time 진단   bag=/home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t50_chirp   축=yaw
+분석 구간 37.0s  (control_active 후 3s 제외, 이후 37s 만 사용)
+  /brov/cmd/wrench     n=  925  dt 중앙  40.0 ms ( 25.0 Hz)  p90  40.3 ms
+  /brov/state          n=  925  dt 중앙  40.0 ms ( 25.0 Hz)  p90  41.5 ms
+
+dead time (명령 -> 가속도 교차상관)
+  피크 lag =  80.0 ms,  r = +0.903   (부그리드 보정  79.7 ms)
+  봉우리 반폭  60.0 ms,  대비(peak−min) 1.44   -- 반폭이 좁고 대비가 클수록 τ 가 그 자리에 실제로 있다
+  lag 프로파일:
+       0.0 ms : r = -0.087
+      20.0 ms : r = +0.129
+      40.0 ms : r = +0.465
+      60.0 ms : r = +0.768
+      80.0 ms : r = +0.903
+     100.0 ms : r = +0.760
+     120.0 ms : r = +0.380
+     140.0 ms : r = -0.059
+     160.0 ms : r = -0.405
+     180.0 ms : r = -0.538
+     200.0 ms : r = -0.466
+     220.0 ms : r = -0.313
+     240.0 ms : r = -0.175
+     260.0 ms : r = -0.114
+     280.0 ms : r = -0.124
+     300.0 ms : r = -0.138
+
+지배 주파수   명령  1.46 Hz (전력비  0.7%)   응답  1.81 Hz (전력비  1.0%)
+진동대 1~5 Hz  명령  1.46 Hz  RMS   0.25 N*m   응답  1.81 Hz  RMS  0.397 rad/s^2
+  (개루프 — 이 값은 주입한 여기의 주파수이지 폐루프 진동이 아니다)
+  여기가 광대역이다(지배 주파수 전력비 0.7%) — chirp 계열. 협대역 분해능 한계는 적용되지 않고, 위의 **실측 반폭**이 정밀도다.
+
+위상 예산  (I_eff = 0.559 kg*m^2, 제어주기 40 ms)
+  -180도 교차 예측 주파수 =  2.39 Hz
+  (개루프이므로 실측 지배 주파수와의 비교는 하지 않는다 — 폐루프 진동이 아니다)
+  이 주파수에서 |L|=1 이 되는 이득 문턱 K_p =  0.38
+    (학습된 정책 실측 K_p ~ 4.5 (surge/heave, 순항 관측) -- 넘으면 진동 조건 성립)
+    기체(관성)         -90.0도
+    dead time      -68.8도
+    ZOH            -17.2도
+    정책              -4.0도
+=== 지연 분해 M3   bag=/home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t50_chirp
+M3  명령→서보출력 도착   lag =  65.0 ms,  r = +0.961   (채널 servo2, n=1392/2644)
+       0.0 ms : r = +0.814
+      30.0 ms : r = +0.899
+      60.0 ms : r = +0.960
+      90.0 ms : r = +0.921
+     120.0 ms : r = +0.835
+     150.0 ms : r = +0.774
+     180.0 ms : r = +0.780
+     210.0 ms : r = +0.799
+     240.0 ms : r = +0.795
+     270.0 ms : r = +0.776
+     300.0 ms : r = +0.774
+=== 편도 transit 분해   bag=/home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t50_chirp
+  servo  n= 2822  시계 drift    +16.5 ppm   큐잉(detrend 후 min 대비): 중앙   7.0  p10   3.2  p90  13.0  최대   29.3 ms   폭(p90−p10)   9.9 ms
+         절대 d(drift 미보정): 중앙 4294995.5  최소 4294989.5 ms
+  ahrs   n= 2827  시계 drift    +19.7 ppm   큐잉(detrend 후 min 대비): 중앙   7.0  p10   3.4  p90  13.0  최대   29.5 ms   폭(p90−p10)   9.6 ms
+         절대 d(drift 미보정): 중앙     27.8  최소     22.1 ms
+  토픽 간 중앙 차 (servo − ahrs): +4294967.7 ms  (burst 내 순서·직렬화 간격의 흔적)
+  큐잉 성분 폭 10 ms — 경로가 평평하다(상수 지연 지배).
+##### a2_yaw_t50_do_set_servo  /home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t50_do_set_servo
+=== dead time 진단   bag=/home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t50_do_set_servo   축=yaw
+분석 구간 37.0s  (control_active 후 3s 제외, 이후 37s 만 사용)
+  /brov/cmd/wrench     n=  925  dt 중앙  40.0 ms ( 25.0 Hz)  p90  40.4 ms
+  /brov/state          n=  925  dt 중앙  40.0 ms ( 25.0 Hz)  p90  41.1 ms
+
+dead time (명령 -> 가속도 교차상관)
+  피크 lag =  80.0 ms,  r = +0.634   (부그리드 보정  78.7 ms)
+  봉우리 반폭 160.0 ms,  대비(peak−min) 0.50   -- 반폭이 좁고 대비가 클수록 τ 가 그 자리에 실제로 있다
+  lag 프로파일:
+       0.0 ms : r = +0.544
+      20.0 ms : r = +0.579
+      40.0 ms : r = +0.607
+      60.0 ms : r = +0.626
+      80.0 ms : r = +0.634
+     100.0 ms : r = +0.624
+     120.0 ms : r = +0.604
+     140.0 ms : r = +0.580
+     160.0 ms : r = +0.548
+     180.0 ms : r = +0.504
+     200.0 ms : r = +0.453
+     220.0 ms : r = +0.400
+     240.0 ms : r = +0.342
+     260.0 ms : r = +0.278
+     280.0 ms : r = +0.208
+     300.0 ms : r = +0.131
+
+지배 주파수   명령  1.00 Hz (전력비 84.1%)   응답  1.00 Hz (전력비 46.4%)
+진동대 1~5 Hz  명령  1.00 Hz  RMS   0.47 N*m   응답  1.00 Hz  RMS  0.537 rad/s^2
+  (개루프 — 이 값은 주입한 여기의 주파수이지 폐루프 진동이 아니다)
+  지연 분해능의 한계: 여기가 1.00 Hz 협대역(전력비 84%)이면 교차상관 봉우리 반폭이 ~250 ms 다.
+  봉우리가 평평하면 jitter 이기 전에 **대역폭 부족**을 먼저 의심할 것 — period_s 를 줄이거나 kind:=chirp 로 다시 잰다.
+
+위상 예산  (I_eff = 0.559 kg*m^2, 제어주기 40 ms)
+  -180도 교차 예측 주파수 =  2.39 Hz
+  (개루프이므로 실측 지배 주파수와의 비교는 하지 않는다 — 폐루프 진동이 아니다)
+  이 주파수에서 |L|=1 이 되는 이득 문턱 K_p =  0.38
+    (학습된 정책 실측 K_p ~ 4.5 (surge/heave, 순항 관측) -- 넘으면 진동 조건 성립)
+    기체(관성)         -90.0도
+    dead time      -68.8도
+    ZOH            -17.2도
+    정책              -4.0도
+=== 지연 분해 M3   bag=/home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t50_do_set_servo
+M3  명령→서보출력 도착   lag = 230.0 ms,  r = -0.374   (채널 servo7, n=1288/2329)
+       0.0 ms : r = -0.362
+      30.0 ms : r = -0.363
+      60.0 ms : r = -0.364
+      90.0 ms : r = -0.366
+     120.0 ms : r = -0.369
+     150.0 ms : r = -0.372
+     180.0 ms : r = -0.374
+     210.0 ms : r = -0.374
+     240.0 ms : r = -0.374
+     270.0 ms : r = -0.374
+     300.0 ms : r = -0.373
+=== 편도 transit 분해   bag=/home/pyo/BROV/brov_ros2/runtime/bags/a2_yaw_t50_do_set_servo
+  servo  n= 2572  시계 drift    -10.5 ppm   큐잉(detrend 후 min 대비): 중앙  10.4  p10   8.6  p90  20.4  최대   74.1 ms   폭(p90−p10)  11.8 ms
+         절대 d(drift 미보정): 중앙 4294998.5  최소 4294988.6 ms
+  ahrs   n= 2571  시계 drift    -12.3 ppm   큐잉(detrend 후 min 대비): 중앙  10.4  p10   9.2  p90  20.5  최대   71.8 ms   폭(p90−p10)  11.3 ms
+         절대 d(drift 미보정): 중앙     31.0  최소     21.0 ms
+  토픽 간 중앙 차 (servo − ahrs): +4294967.4 ms  (burst 내 순서·직렬화 간격의 흔적)
+  큐잉 성분 폭 12 ms — 경로가 평평하다(상수 지연 지배).

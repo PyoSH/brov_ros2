@@ -409,3 +409,27 @@ def test_transit_separates_queueing_from_constant_delay(capsys):
     p90_queue, out_queue = run(rng.uniform(0.0, 0.035, n))
     assert 25.0 < p90_queue < 36.0, f"큐잉 폭 복원 실패: p90={p90_queue}"
     assert "대기" in out_queue
+
+
+def test_transit_early_outliers_are_not_queueing(capsys):
+    """09-03 실기 a2_yaw bag 의 함정: servo 의 3 % 가 한 telemetry 주기(40 ms)
+    먼저 도착하면 min 이 그 이상치가 되어 'min 대비' 가 40 ms 로 뜬다. 판정은
+    덩어리의 폭(p90−p10)으로 해야 '평평' 이 나온다. 그리고 토픽 간 중앙 차는
+    원시 d 로 재야 servo 가 ahrs 보다 늦게 오는 것이 보인다(잔차로 재면 항상 0)."""
+    from brov_base.diag_loop_delay import analyse_transit
+
+    rng = np.random.default_rng(3)
+    n = 800
+    t_fc = np.arange(n) * 0.04
+    arrival = t_fc + 500.0 + 0.060
+    early = rng.random(n) < 0.03
+    arrival_sv = arrival - np.where(early, 0.040, 0.0)
+    sv = np.column_stack([arrival_sv, t_fc] + [np.full(n, 1500.0)] * 8)
+    gy = np.column_stack([arrival - 0.012, t_fc, *(np.zeros((3, n)))])
+    analyse_transit(sv, gy)
+    out = capsys.readouterr().out
+    assert "평평하다" in out, out
+    assert "큐잉이 아니다" in out, out
+    line = next(l for l in out.splitlines() if "토픽 간 중앙 차" in l)
+    dm = float(line.split(":")[1].split()[0])
+    assert 10.0 < dm < 14.0, line

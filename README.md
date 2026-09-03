@@ -116,6 +116,8 @@ Ubuntu 22.04/ROS 2 Humble 환경의 fresh clone/build 절차, sim2sim 분해 실
 이관은 [docs/deadtime_result_to_training.md](docs/deadtime_result_to_training.md)에 있다.
 2026-09-03 세션(delayA 정책 배포 검증, 지연 분해 M1~M4·chirp로 τ=85 ms 확정)은
 [docs/session_20260903_summary.md](docs/session_20260903_summary.md)에 정리했다.
+수조 세 세션의 **총정리(무엇을 알기 위해 무슨 실험을 했고 결과는)** 는
+[docs/POOL_EXPERIMENTS_20260902-03.md](docs/POOL_EXPERIMENTS_20260902-03.md). 최종 bag 두 개는 `runtime/bags/` 에 git 추적.
 질문별(무엇을 알려 했고 무엇을 알았나) 종합과 **wrapper 가 병목을 고착시켰을 가능성의 감사**는
 [docs/sim2real_findings_20260902-03.md](docs/sim2real_findings_20260902-03.md) 에 있다.
 

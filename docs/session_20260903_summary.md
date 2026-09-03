@@ -300,19 +300,21 @@ FC 내부+telemetry  64.4 ms  ████████████████�
 
 ## 다음에 할 것
 
-| 우선 | 항목 | 근거 |
-|---|---|---|
-| 1 | **telemetry 25 → 50 Hz** 후 A2-yaw 재측정 | 되먹임 양자화 20 → 10 ms. 잔차 지배 판정 |
-| 2 | **라우터 교체 A/B** (MAVLinkServer/MAVP2P) | 남은 ~44 ms 중 큐잉 몫 |
-| 3 | ~~`heading_mode:=straight` 재현~~ | **완료 (실험 5)** — 발산 해소, 진동은 surge 만 남음 |
-| 4 | ~~sway·yaw 대응~~ | **불필요** — 미션 기하(180° 선회)가 만든 것이었고 straight 로 사라짐 |
-| 4' | **surge 축 2 Hz** (6.7 N, heading_mode 무관) | 진짜 남은 것. τ 축소(항목 1~2) 또는 지연 DR 강화 |
-| 5 | **A50 점검** | 주행 중 `velocity_valid` 61 %, 빔별 무효 31~36 %, 정지 시 beam3 상시 무효. 회전을 줄여 버틴 것이지 고쳐진 게 아니다 |
-| — | ~~`RC_SPEED` 400 Hz~~ | **기각** (M4 ≈ 0) |
-| — | ~~온보드 이전~~ | 보류 (이득 상한 20.6 ms) |
+4차(09-03 오후) 결과까지 반영. 총정리는 [POOL_EXPERIMENTS_20260902-03.md](POOL_EXPERIMENTS_20260902-03.md),
+실행 기록은 [REAL_ROBOT_SESSION.md](REAL_ROBOT_SESSION.md) 4차.
 
-**학습 주입값 갱신: 85 ms 중심, 40~120 ms 분포** (기존 "80 ms 고정"에서).
-근거는 chirp 85.3 ms 와 링크 jitter 폭 19.7 ms.
+| 우선 | 항목 | 상태 / 근거 |
+|---|---|---|
+| 1 | **DVL 게이트** — 매 주행 REST 폴링, 순항 valid < 80 % 면 판정 제외; 완전 상실 경로(BlueOS extension/TCP) 조사 | 4차: 벽 2·중단 2. 폴링: 순항 82~88 % 정상, 바닥 고도 4 cm 라 정지 lock 불가 |
+| 2 | **지연 DR 확대 (학습 PC)** — 주입 중심 59 ms, 주행별 ±10 | surge 2 Hz 는 50 Hz 로 안 움직임 (×1.14). 유일한 잔여 진동 |
+| 3 | telemetry 100 Hz 시험 | 50 Hz 에서 FC load 16.8 %. 위상 폭 20→10 |
+| 4 | `ekf_flags` 를 BrovState 에 | 발산 순간을 사후에 보게 |
+| — | ~~telemetry 50 Hz 확정~~ | **완료** — τ 80, M3 60, 주행별 ±10 |
+| — | ~~64.4 ms 의 정체~~ | **완료** — ArduSub 안(RC 표본화 + 슬롯 대기). 링크 17 ms |
+| — | ~~온보드 이전 / 라우터 / endpoint / DO_SET_SERVO~~ | **전부 이유 소멸** (하행 10 ms; DO_SET_SERVO 는 +80 ms 더 나쁨) |
+| — | ~~`heading_mode:=straight`~~ / ~~sway·yaw~~ / ~~RC_SPEED~~ | 완료 / 불필요 / 기각 |
+
+학습 주입값: **중심 ≈ τ_total 80 − 21 = 59 ms** (50 Hz 기준), 주행별 ±10 을 DR 폭이 덮어야 한다.
 
 ## 인벤토리
 

@@ -95,6 +95,9 @@ _BAG_TOPICS = (
     "/brov/desired",
     # 원시 센서. `/brov/state` 가 고르지 않은 경로를 여기서 남긴다.
     "/brov/sensor/ahrs",
+    # FC 시계 도장. 정책 주행 bag 에서도 M3/M4·transit 분해가 되게 한다
+    # (09-03 bag 에는 없어서 못 했다).
+    "/brov/sensor/servo_out",
     "/brov/sensor/depth_ekf",
     "/brov/sensor/pressure0",
     "/brov/sensor/pressure1",
@@ -214,6 +217,9 @@ def _compose(context):
                 "send_pwm": cfg("send_pwm"),
                 "arm": cfg("arm"),
                 "depth_source": cfg("depth_source"),
+                # G1 (sim2real_findings §6-2b): telemetry 주기. 기본 25 = 기존.
+                # 실기 G1 시험·50 Hz 배포는 telemetry_rate_hz:=50.
+                "telemetry_rate_hz": cfg("telemetry_rate_hz"),
                 # 기록은 이 launch 가 직접 한다 -- 원시 센서와 마커 토픽까지
                 # 넣어야 하는데 split_stack 의 목록은 제어 경로만 담는다.
                 "record_bag": "false",
@@ -344,6 +350,7 @@ def generate_launch_description() -> LaunchDescription:
             # 경로는 저장소 위치에 의존하므로 기본값은 비워 두고
             # runtime/a3_policy.sh 가 채운다.
             DeclareLaunchArgument("policy_path", default_value=""),
+            DeclareLaunchArgument("telemetry_rate_hz", default_value="25.0"),
             DeclareLaunchArgument("metadata_path", default_value=""),
             DeclareLaunchArgument("vehicle_model_path", default_value=""),
             DeclareLaunchArgument(

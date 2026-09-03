@@ -346,6 +346,18 @@ ATTITUDE 메시지(상호 동기), v 는 별도 메시지(스냅샷 내 상호 s
 격차지만 크기(≤20~40 ms)가 delayA 학습 지연(40~80)보다 작아 당장 허용.
 transit 도구가 실기 skew 를 정량화한다.
 
+### 6a-2. 실기 bag 사전 분석 (2026-09-03, 랩톱) — 상한만 얻었다
+
+09-03 실기 bag(a2_yaw, a2_chirp)에 transit 을 돌리니 편도 폭이 3~4 ms 로 나왔으나,
+그 bag 은 G2 수정 전이라 도착 시각이 25 Hz 틱으로 양자화돼 있다. 얻은 것은 **큐잉 폭
+< 40 ms 라는 상한**뿐이고, 위 표의 직렬 burst 가설(~35 ms)은 살아 있다. 측정 순서는
+**Step 0 링크 종류 → transit 절대값(100 Hz 폴링 bag) → RPi 프로브(두 구간 분리) →
+(필요시) 전용 endpoint** 로 잡았다. 절차는 REAL_ROBOT_SESSION.md 4차.
+
+ArduPilot 소스로 확정: servo 도장은 메시지 생성 시각(`AP_HAL::micros()`), RC override
+는 `rc_loop` 50 Hz 표본화. 그래서 "FC 처리" 에는 RC 표본화 대기(평균 10) + 스트림 슬롯
+대기(평균 20 @25 Hz)가 구조적으로 들어 있다 — sim2real_findings §6-2d.
+
 ## 6b. 보조 수단과 기각 수단 (조사 기록, 2026-09-02)
 
 **telemetry 주기 상향 (보조, 이득 작음).** ATTITUDE 등을 25→50 Hz 로 올리면
