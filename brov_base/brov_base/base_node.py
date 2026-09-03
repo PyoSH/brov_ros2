@@ -85,13 +85,13 @@ _MANUAL_CUSTOM_MODE = 19
 class BaseNode(Node):
     """MAVLink 링크, 액추에이터, 안전을 단독 소유하는 노드."""
 
-    def __init__(self, interface=None) -> None:
+    def __init__(self, interface=None, **node_kwargs) -> None:
         """``interface``를 주입하면 MAVLink 없이 구동한다.
 
         watchdog·fault latch·할당은 이 노드가 새로 떠안은 안전 책임이고,
         실기 없이 검증할 수 있어야 한다. 기본값 None이면 실제 링크를 연다.
         """
-        super().__init__("brov_base")
+        super().__init__("brov_base", **node_kwargs)
 
         # ── 링크/액추에이터 ──
         self.declare_parameter("connection", "udpin:0.0.0.0:14550")
@@ -103,6 +103,15 @@ class BaseNode(Node):
         # 기본값은 아직 "mavlink_ekf" 다: GT 교차검증 전에는 조용히 바꾸지 않는다
         # (velocity_source 가 DVL 축 변환 확정 전까지 거부하는 것과 같은 규율).
         self.declare_parameter("depth_source", "mavlink_ekf")
+        # G1 (sim2real_findings §6-2): telemetry 주기가 코드 상수(25 Hz)로
+        # 굳어 있었다 -- 정책 dt 에서 온 값을 telemetry 에도 그대로 쓴 것.
+        # telemetry 는 정책보다 빨라도 되고(관측 노드가 최신을 쓴다), 되먹임
+        # 양자화(평균 20 ms, τ 의 23%)를 줄이는 유일한 싼 수단이라 노출한다.
+        # 기본값 25.0 = 기존 동작 그대로.
+        self.declare_parameter("telemetry_rate_hz", 25.0)
+        # G3 실험: 액추에이션 경로 A/B (rc_override | do_set_servo).
+        # do_set_servo 는 진단 전용 -- 미션에 쓰지 말 것.
+        self.declare_parameter("actuation_backend", "rc_override")
         # 액추에이터 모델. base가 소유하는 지식이고 SITL과 실기가 다르다.
         #
         #   t200_table    실기. T200 제조사 실측 테이블(비선형·비대칭, deadband).
@@ -208,13 +217,24 @@ class BaseNode(Node):
 
         conn = str(p("connection").value)
         profile = str(p("thruster_reversal_profile").value)
+        backend = str(p("actuation_backend").value)
+        if backend not in ("rc_override", "do_set_servo"):
+            raise ValueError(f"actuation_backend={backend!r}")
+        telem_hz = float(p("telemetry_rate_hz").value)
+        if not 1.0 <= telem_hz <= 100.0:
+            raise ValueError(f"telemetry_rate_hz={telem_hz} — 1~100 Hz 범위여야 한다")
         if interface is None:
             self._interface = RealRobotInterface(
                 conn,
                 thruster_reversal_sign=thruster_reversal_sign_for_profile(profile, conn),
+                telemetry_rate_hz=telem_hz,
             )
+            self._interface.actuation_backend = backend
+            if backend != "rc_override":
+                self.get_logger().warn(f"실험 액추에이션 백엔드: {backend} — 진단 전용")
             self._interface.connect()
-            self.get_logger().info(f"MAVLink {conn}, reversal profile {profile}")
+            self.get_logger().info(
+                f"MAVLink {conn}, reversal profile {profile}, telemetry {telem_hz:.0f} Hz")
         else:
             self._interface = interface
             self.get_logger().warn("주입된 interface 사용 — 시험 전용")
@@ -335,6 +355,13 @@ class BaseNode(Node):
 
         period = 1.0 / float(p("state_rate_hz").value)
         self.create_timer(period, self._tick)
+        if self._publish_sensor_topics:
+            # 원시 센서 토픽은 제어 틱과 분리해 100 Hz 로 살핀다 (G2 최소 수정,
+            # 2026-09-03). 제어 틱(state_rate 25 Hz)에서 발행하면 telemetry 가
+            # 그보다 빨리 와도 틱 사이 표본이 버려져 -- 토픽·bag 이 도착률을
+            # 은폐하고(50 Hz 요청이 25 로 보임) M3/M4 분해능까지 깎는다.
+            # seq 가드가 있어 새 표본이 없으면 아무것도 안 낸다.
+            self.create_timer(0.01, self._sensor_tick)
         limits = (f"선형 ±{self._gz_half_range:.1f} N"
                   if self._thruster_model == "gazebo_linear"
                   else (
@@ -545,6 +572,15 @@ class BaseNode(Node):
         self._pub_odom.publish(message)
 
     # ---------------------------------------------------------------- 센서
+    def _sensor_tick(self) -> None:
+        snap = self._interface.snapshot()
+        if snap is None:
+            return
+        try:
+            self._publish_sensor_sample(snap)
+        except (ValueError, RuntimeError, KeyError) as exc:
+            self.get_logger().error(f"센서 토픽 발행 실패: {exc}")
+
     def _publish_sensor_sample(self, snap: dict) -> None:
         """실제로 새로 온 샘플만 낸다.
 
@@ -675,11 +711,6 @@ class BaseNode(Node):
                         self._publish_odometry_sample(snap)
                     except (ValueError, RuntimeError, KeyError) as exc:
                         self.get_logger().error(f"odometry 발행 실패: {exc}")
-            if self._publish_sensor_topics:
-                try:
-                    self._publish_sensor_sample(snap)
-                except (ValueError, RuntimeError, KeyError) as exc:
-                    self.get_logger().error(f"센서 토픽 발행 실패: {exc}")
         active = bool(
             self._send_pwm and self._armed_by_us and self._started
             and not self._faulted and not self._estopped

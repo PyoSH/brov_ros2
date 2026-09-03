@@ -204,6 +204,54 @@ A50 최소 0.05 m 위지만 빔이 흔들림). (2) `BrovState` 에 `ekf_flags` �
 | G6 | **DDS 로컬 홉** — policy → base_node 가 별 프로세스 | 4 노드 분리 | 로컬 DDS ~0 이라 **가정**, 측정 안 함 | base_node 가 wrench 수신 시각을 stamp 대비 로그. **10 분** |
 | G7 | **pymavlink 단일 수신 스레드, 0.2 s 블로킹** | `mavlink_interface.py _recv_loop` | 버스트 도착 시 순차 처리. 25 Hz × 7 스트림에서 문제될 크기는 아니지만 **측정 안 함** | G6 와 함께 수신 시각 로그. **10 분** |
 
+### 6-2b. G1·G2 — SITL 선행 검증으로 닫힘 (2026-09-03, 학습 PC)
+
+**G1 판정: 배선은 유죄, FC는 무죄, 그리고 cap 의 정체는 G2 였다.**
+
+1. `telemetry_rate_hz` 를 base_node 파라미터로 노출 (split_stack·deadtime_test
+   launch 인자 포함, 기본 25 = 기존 동작, 범위 가드 1~100).
+2. **FC 는 요청을 지킨다** — wrapper 없이 bare pymavlink 로 같은 직결 경로에
+   요청하니 50/100 Hz 를 정확히 송출 (SCHED_LOOP_RATE 400). ACK 는 wrapper
+   경유와 동일(result=0)이었다.
+3. 그런데 토픽은 25 Hz 그대로였다 — 원인은 **G2 틱 샘플링**: 원시 센서 토픽이
+   25 Hz 제어 틱에서 발행돼 도착 표본의 절반을 버렸다. **토픽 주기는 도착률의
+   증거가 아니었다** (실기 세션의 "속도 정보 21.5 Hz" 관측도 같은 왜곡).
+4. **제어 경로는 이미 이득을 받고 있었다** — 틱이 최신 스냅샷을 쓰므로.
+   실측: τ(명령→state 응답, open-loop yaw, 부그리드) **30.6 → 19.1 ms
+   (−11.5 ms)** — "양자화 평균 20→10 ms" 예측 적중.
+5. **G2 최소 수정 적용**: 원시 센서 토픽을 전용 100 Hz 타이머로 이관(seq 가드
+   유지). 결과 ahrs 50.0 Hz / servo 48 Hz 로 도착률이 그대로 보인다.
+   `/brov/state` 는 25 Hz 유지 — 정책 계약 불변. M3/M4 의 FC-stamp 분해능도
+   이만큼 좋아진다. 완전 이벤트 구동(원판 G2, 반나절)은 100 Hz 폴링 오차
+   ≤10 ms 라 당분간 불필요.
+
+**실기에 남은 것**: `telemetry_rate_hz:=50` 으로 A2 재측정 한 번 — 예상 τ
+85.3 → ~75 ms. FC CPU 여유(실 Pixhawk)만 실기에서 확인.
+
+### 6-2c. G3 — SITL A/B 로 닫힘 (2026-09-03, 학습 PC)
+
+`actuation_backend` 실험 스위치(rc_override | do_set_servo, 진단 전용)를 배선해
+직결·telemetry 50 Hz 동일 조건에서 A2-yaw A/B:
+
+| | rc_override | do_set_servo |
+|---|---|---|
+| M3 (명령→서보출력) | 30.0 ms | **30.0 ms** |
+| \|r\| | 0.998 | 0.998 |
+
+**판정: 차이 없음.** RC override 를 FC 가 "조종사 입력"으로 해석하는 경로는
+DO_SET_SERVO 대비 추가 지연이 없다 — 같은 펌웨어 로직이므로 실기에도 구조가
+같다(절대값은 실기 FC 에서 다를 수 있으나 경로 간 차는 구조의 문제다).
+"M3−M2 = 64 ms 를 override 경로 탓으로 돌렸을 가능성"(6-2 G3)은 **기각** —
+잔차의 초점은 G4(라우터/전용 endpoint)와 telemetry 생성으로 좁혀진다.
+부수: DO_SET_SERVO 는 8ch×25 Hz COMMAND_LONG + ACK 홍수에서도 SITL 이 견뎠다
+— 그래도 진단 전용이며 미션 사용 금지(§6-2 G3 표의 우려는 rate 가 아니라
+경로였고, 그 답이 "차이 없음"이다).
+
+부수 실측 (같은 A/B 에서): telemetry 50 Hz 가 M3 자체를 45 → **30 ms** 로
+줄였다(서보 스트림 양자화 20→10 ms). G1 의 이득이 M3 에도 그대로 보인다.
+SITL 직결의 링크가 ~0 이므로 SITL "FC 내부" 몫은 ~20 ms — 실기 64 ms 와의
+차 ~44 ms 가 실기에서 라우터+RPi+실 FC 쪽에 있다는 뜻이다.
+
 ### 6-3. 판단
 
 - **G1 은 확실한 고착이다.** 25 Hz 는 정책 dt 에서 온 값을 telemetry 에도 그대로 쓴 것이고,
@@ -231,6 +279,6 @@ A50 최소 0.05 m 위지만 빔이 흔들림). (2) `BrovState` 에 `ekf_flags` �
 2. G1: `telemetry_rate_hz` 를 base_node 파라미터로 노출 → 50 Hz → 도착 주기·age 분포 →
    A2-yaw 재측정. τ 가 ~10 ms 줄면 양자화가 그만큼이었던 것.
 3. G4: 전용 endpoint 로 M2 재측정. 15 ms 중 큐잉 몫.
-4. G3: `DO_SET_SERVO` 경로로 M3 재측정. 여기서 64 ms 가 크게 줄면 **RC override 가
-   병목이었고, 지금까지의 "FC 내부" 귀속이 틀린 것**이 된다.
+4. ~~G3: `DO_SET_SERVO` 경로로 M3 재측정~~ — **SITL 에서 닫힘 (6-2c, 차이 없음).**
+   실기 확인은 선택 항목으로 강등.
 5. 그 뒤 남는 τ 가 학습 주입값이고, 그때 G2(이벤트 구동)를 결정한다.

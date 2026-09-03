@@ -119,6 +119,8 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("record_bag", default_value="false",
                               choices=["true", "false"]),
         DeclareLaunchArgument("bag_path", default_value="brov_run"),
+        # G1: telemetry 수신 주기 (기본 25 = 기존 동작). 실기 G1 시험은 50.
+        DeclareLaunchArgument("telemetry_rate_hz", default_value="25.0"),
         DeclareLaunchArgument("state_rate_hz", default_value="25.0"),
         DeclareLaunchArgument("wrench_command_timeout_s", default_value="0.25"),
     ]
@@ -134,6 +136,7 @@ def generate_launch_description() -> LaunchDescription:
                 "depth_source": cfg("depth_source"),
                 "send_pwm": cfg("send_pwm"),
                 "arm": cfg("arm"),
+                "telemetry_rate_hz": cfg("telemetry_rate_hz"),
                 "state_rate_hz": cfg("state_rate_hz"),
                 "wrench_command_timeout_s": cfg("wrench_command_timeout_s"),
             }],

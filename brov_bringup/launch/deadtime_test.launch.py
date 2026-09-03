@@ -132,6 +132,9 @@ def _compose(context):
                 "thruster_model": cfg("thruster_model"),
                 "depth_source": cfg("depth_source"),
                 "send_pwm": ParameterValue(cfg("send_pwm"), value_type=bool),
+                "telemetry_rate_hz": ParameterValue(
+                    cfg("telemetry_rate_hz"), value_type=float),
+                "actuation_backend": cfg("actuation_backend"),
                 "arm": ParameterValue(cfg("arm"), value_type=bool),
                 "state_rate_hz": ParameterValue(
                     cfg("state_rate_hz"), value_type=float),
@@ -285,6 +288,12 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         # ── 안전 기본값 ──
+        # G1: telemetry 주기 A/B (25 vs 50). 직결 경로에서만 의미 있다 --
+        # mavproxy 경유는 streamrate 가 덮어쓴다.
+        DeclareLaunchArgument("telemetry_rate_hz", default_value="25.0"),
+        # G3: 액추에이션 경로 A/B (진단 전용)
+        DeclareLaunchArgument("actuation_backend", default_value="rc_override",
+                              choices=["rc_override", "do_set_servo"]),
         DeclareLaunchArgument(
             "send_pwm", default_value="false", choices=["true", "false"]),
         DeclareLaunchArgument(

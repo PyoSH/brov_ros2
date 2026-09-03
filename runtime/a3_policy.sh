@@ -7,7 +7,10 @@
 #
 # 바닥에 놓고 start (rise_m 이 0.5 m 띄운다). 가까운 벽에서 0.5 m, 기수 +x.
 set -e
-case "${1:?사용법: a3_policy.sh <delayA|fixplant>}" in
+# 2026-09-03 사용자 결정: delayA 가 기본 배포 정책으로 승격. 단 fixplant
+# (지연 없이 학습된 정책)는 **대조군으로 유지** — 비교 주행 시 같은 자리에서
+# 짝으로 돌린다 (9-03 세션의 55 s 창 A/B 방식).
+case "${1:-delayA}" in
   delayA)   BUNDLE=sim2swim_delayA_wa0017_mk2_s42_i299 ;;
   fixplant) BUNDLE=sim2swim_fixplant_wa0017_mk2_s42_i299 ;;
   *) echo "delayA 또는 fixplant"; exit 1 ;;

@@ -176,6 +176,13 @@ class RealRobotInterface:
         # 이 시계로 servo↔gyro 를 교차상관한다 -- 링크가 전혀 안 낀다.
         self._servo_time_usec = None
         self._servo_seq = 0
+        # G3 실험 (sim2real_findings §6-2): RC override 가 유일한 액추에이션
+        # 경로였고, FC 가 그것을 "조종사 입력"으로 해석·적용하는 구간의 지연을
+        # 다른 경로와 **한 번도 대조하지 않았다.** "do_set_servo" 는 그 A/B 용
+        # 실험 백엔드다 -- MAV_CMD_DO_SET_SERVO 를 채널당 COMMAND_LONG 으로
+        # 보낸다(8ch × 25 Hz = 200 msg/s + ACK 홍수, 설계상 고주기용이 아님 --
+        # 그것이 드러나는 것까지가 실험이다). 기본은 기존 그대로.
+        self.actuation_backend = "rc_override"
         self._armed = None
         self._custom_mode = None
         self._heartbeat_system = None
@@ -656,9 +663,14 @@ class RealRobotInterface:
             for channel in _CAMERA_RC_OPTION_CHANNELS:
                 if not self._set_integer_parameter_verified(f"RC{channel}_OPTION", 0):
                     raise RuntimeError(f"카메라 입력 격리 실패: RC{channel}_OPTION")
+            # G3 실험 백엔드는 함수 0(Disabled) — DO_SET_SERVO 는 기능이
+            # 배정된 채널을 매 루프 되덮으므로 Disabled 에서만 유효하다.
+            target_fn = 0 if self.actuation_backend == "do_set_servo" \
+                else _RC_PASSTHRU_FUNCTION
             for i in range(1, 9):
-                if not self._set_servo_function_verified(i, _RC_PASSTHRU_FUNCTION):
-                    raise RuntimeError(f"RCPassThru 설정 검증 실패: SERVO{i}")
+                if not self._set_servo_function_verified(i, target_fn):
+                    raise RuntimeError(
+                        f"SERVO{i}_FUNCTION={target_fn} 설정 검증 실패")
         except Exception:
             # 중간 실패 시 이미 바꾼 파라미터도 즉시 원복한다.
             self.disable_passthrough()
@@ -807,6 +819,21 @@ class RealRobotInterface:
             chan_us[ch - 1] = int(us[i].item())
 
         # print(f"send_pwm: {chan_us}")
+
+        if self.actuation_backend == "do_set_servo":
+            from pymavlink import mavutil  # 이 파일 규약: 지역 import
+
+            # 주의: 이 경로는 SERVOn_FUNCTION=0(Disabled)에서만 유효하다 --
+            # RCPassThru 함수가 걸려 있으면 루프마다 override 값으로 되덮인다.
+            # enable_passthrough() 가 backend 에 따라 함수를 다르게 세팅한다.
+            with self._tx_lock:
+                for i, ch in enumerate(self._thr_channels):
+                    self._master.mav.command_long_send(
+                        self._master.target_system, self._master.target_component,
+                        mavutil.mavlink.MAV_CMD_DO_SET_SERVO, 0,
+                        float(ch), float(int(us[i].item())), 0, 0, 0, 0, 0,
+                    )
+            return
 
         with self._tx_lock:
             self._master.mav.rc_channels_override_send(

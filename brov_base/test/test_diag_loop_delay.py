@@ -366,3 +366,46 @@ def test_peak_quality_survives_a_peak_at_the_edge():
     q = peak_quality(cc, lags, step)
     assert q["tau"] == pytest.approx(0.0)
     assert q["refined"] == pytest.approx(0.0)
+
+
+def test_transit_separates_queueing_from_constant_delay(capsys):
+    """G4 분해 ①의 수학 — 큐잉과 상수 지연을 실제로 구분하는가.
+
+    상수 transit(모든 메시지 같은 지연)이면 `d − min(d)` 가 0 근처에 몰려야
+    하고, burst 큐잉(메시지마다 대기 시간이 다름)이면 p90 이 그 대기 폭만큼
+    벌어져야 한다. offset(시계 차)이 얼마든 결과가 같아야 한다 — 분해가
+    offset-free 라는 주장 자체의 검증이다.
+    """
+    from brov_base.diag_loop_delay import analyse_transit
+
+    rng = np.random.default_rng(11)
+    n = 500
+    t_fc = np.arange(n) * 0.04
+    CLOCK_OFFSET = 12345.678            # 임의의 시계 차 — 결과에 영향 없어야 함
+
+    DRIFT_PPM = 3000e-6                 # SITL 실측급 0.3% drift — 결과 불변이어야 함
+
+    def run(extra_wait):
+        # 선형 drift + 느린 wobble(±8 ms, 20 s 주기 — SITL RTF 요동 모사)까지
+        # 걸어도 큐잉 판정이 불변이어야 한다.
+        wobble = 0.008 * np.sin(2 * np.pi * t_fc / 20.0)
+        arrival = t_fc * (1 + DRIFT_PPM) + CLOCK_OFFSET + 0.020 + wobble + extra_wait
+        sv = np.column_stack([arrival, t_fc] + [np.full(n, 1500.0)] * 8)
+        gy = np.column_stack([arrival + 0.002, t_fc, *(np.zeros((3, n)))])
+        analyse_transit(sv, gy)
+        out = capsys.readouterr().out
+        line = next(l for l in out.splitlines() if l.startswith("  servo"))
+        p90 = float(line.split("p90")[1].split()[0])
+        return p90, out
+
+    # 상수 지연: p90 ≈ 0
+    p90_const, out_const = run(np.zeros(n))
+    # ±8 ms wobble 이 2 s 창을 조금 새어나와(수 ms) 0 은 아니다 — 판정 문턱
+    # (15 ms)과 큐잉 케이스(>25 ms)에서 충분히 떨어져 있으면 된다.
+    assert p90_const < 8.0, f"상수 지연인데 큐잉으로 읽힘: p90={p90_const}"
+    assert "평평하다" in out_const
+
+    # burst 큐잉: 메시지마다 0~35 ms 대기 (115200 baud burst 시나리오)
+    p90_queue, out_queue = run(rng.uniform(0.0, 0.035, n))
+    assert 25.0 < p90_queue < 36.0, f"큐잉 폭 복원 실패: p90={p90_queue}"
+    assert "대기" in out_queue

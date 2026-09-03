@@ -338,6 +338,11 @@ def generate_launch_description() -> LaunchDescription:
                     "먼저 보내주기를 기다리는 방식이라 닿지 않는다."
                 ),
             ),
+            # 정본 번들 (2026-09-03 승격): sim2swim_delayA_wa0017_mk2_s42_i299
+            # — 실기 검증 통과 (포화 58→7%, 속도 +70%). 대조군은
+            # sim2swim_fixplant_wa0017_mk2_s42_i299 (지연 없이 학습).
+            # 경로는 저장소 위치에 의존하므로 기본값은 비워 두고
+            # runtime/a3_policy.sh 가 채운다.
             DeclareLaunchArgument("policy_path", default_value=""),
             DeclareLaunchArgument("metadata_path", default_value=""),
             DeclareLaunchArgument("vehicle_model_path", default_value=""),

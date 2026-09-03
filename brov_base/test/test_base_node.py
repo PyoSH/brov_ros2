@@ -525,10 +525,13 @@ def test_odometry_is_not_published_without_a_session_id():
 # ------------------------------------------------------------------ 센서
 # `/brov/state` 는 depth_source 가 **고른** 경로 하나만 싣는다. 깊이 게이트와
 # dead time 분석은 고르지 않은 쪽도 있어야 성립하므로 원시값을 따로 낸다.
+# 주의: 원시 센서 토픽 발행은 2026-09-03 부터 제어 틱이 아니라 전용 100 Hz
+# _sensor_tick 담당이다 (G2 최소수정 — 토픽이 도착률을 은폐하지 않게).
 def test_raw_sensor_topics_carry_both_depth_paths():
     node, _ = _node()
     captured = _captured(node)
     node._tick()
+    node._sensor_tick()
     assert len(captured["ahrs"]) == 1
     assert len(captured["depth_ekf"]) == 1
     # instance 2 는 미수신이므로 내지 않는다.
@@ -548,6 +551,7 @@ def test_ekf_depth_is_still_published_when_the_pressure_path_is_selected():
     iface._snap["pos_ned"] = torch.tensor([0.0, 0.0, -0.42])
     captured = _captured(node)
     node._tick()
+    node._sensor_tick()
     assert captured["depth_ekf"][0].data == pytest.approx(-0.42)
 
 
@@ -557,7 +561,9 @@ def test_raw_topics_are_republished_only_on_a_new_sample():
     node, iface = _node()
     captured = _captured(node)
     node._tick()
+    node._sensor_tick()
     node._tick()
+    node._sensor_tick()
     assert [len(x) for x in captured["pressure"]] == [1, 1, 0]
     assert len(captured["ahrs"]) == 1
     assert len(captured["depth_ekf"]) == 1
@@ -565,6 +571,7 @@ def test_raw_topics_are_republished_only_on_a_new_sample():
     iface._snap["press_seq"] = [2, 1, 0]
     iface._snap["att_seq"] = 2
     node._tick()
+    node._sensor_tick()
     assert [len(x) for x in captured["pressure"]] == [2, 1, 0]
     assert len(captured["ahrs"]) == 2
     # LOCAL_POSITION_NED 는 안 왔다.
@@ -593,3 +600,21 @@ def test_request_streams_service_resends_and_reports_what_arrives():
     assert "HEARTBEAT×5" in res.message
     assert "안 옴: ATTITUDE_QUATERNION" in res.message
     assert "ACK cmd=511 result=0(수락)" in res.message
+
+
+def test_telemetry_rate_out_of_range_is_refused():
+    """G1 파라미터화의 안전판 — telemetry_rate_hz 는 1~100 Hz 만 받는다.
+
+    0 이면 SET_MESSAGE_INTERVAL 나눗셈이 터지고, 수백 Hz 는 실기 FC 부하를
+    검증 없이 올린다. 잘못된 값은 기동 시점에 죽어야 한다.
+    """
+    import rclpy
+
+    iface = _FakeInterface()
+    with pytest.raises((ValueError, Exception)) as exc:
+        BaseNode(
+            interface=iface,
+            parameter_overrides=[
+                rclpy.parameter.Parameter("telemetry_rate_hz", value=0.0)],
+        )
+    assert "telemetry_rate_hz" in str(exc.value)

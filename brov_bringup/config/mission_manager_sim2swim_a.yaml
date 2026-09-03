@@ -18,7 +18,9 @@ brov_mission_manager:
     pool_safe_max_xyz: [3.65, 1.40, 0.90]
     max_first_point_distance_m: 0.30
     min_segment_length_m: 0.05
-    max_segment_length_m: 2.20
+    # 2026-09-03 사용자 결정: case_a 정본은 2.0 m. (9-01 실험 커밋이 2.20 으로
+    # 올렸으나 a2 프로파일·계약 시험과 어긋나 있었다.)
+    max_segment_length_m: 2.0
     min_waypoints: 3
     max_waypoints: 3
 
@@ -28,7 +30,8 @@ brov_mission_manager:
     cruise_speed: 0.50
     lookahead_dist: 0.40
     reach_threshold: 0.15
-    max_cruise_speed: 1.00
+    # 같은 실험 커밋의 산물(0.60→1.00) — 계약 시험이 단언하는 0.60 으로 복원.
+    max_cruise_speed: 0.60
     max_lookahead_dist: 1.00
     max_reach_threshold: 0.50
     heading_mode: takeoff_then_align

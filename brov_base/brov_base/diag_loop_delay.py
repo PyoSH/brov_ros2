@@ -213,6 +213,68 @@ def read_bag_fc(path: str):
     return np.array(wr), np.array(sv), np.array(gy)
 
 
+def analyse_transit(sv, gy, offset_s=None):
+    """G4 분해 ①②: 메시지별 편도 시간 d_i = 도착(랩톱) − 생성(FC).
+
+    시계 offset 을 모르면 d_i 는 상수 offset 을 품지만, **분포의 폭**은 offset
+    과 무관하다 -- `d − min(d)` 가 "최속 경로 대비 추가로 기다린 시간"(큐잉
+    성분)이다. 44 ms 잔차가 큐잉이면 이 분포가 수십 ms 로 퍼지고, 상수 지연
+    (예: 고정 스케줄)이면 좁게 몰린다.
+
+    `--offset`(diag_link_rtt 의 TIMESYNC 추정값)을 주면 절대 하행 시간이 된다.
+
+    두 토픽(servo/ahrs)의 중앙값 차는 FC 가 burst 안에서 두 메시지를 내보내는
+    순서·간격의 흔적이다 -- 직렬 대역폭이 좁을수록 벌어진다.
+    """
+    out = {}
+    for name, arr in (("servo", sv), ("ahrs", gy)):
+        d = arr[:, 0] - arr[:, 1]          # 도착(랩톱) − FC stamp
+        if offset_s is not None:
+            d = d - offset_s
+        # **detrend 필수.** FC 시계와 랩톱 wall 은 속도가 다르다(실기 크리스털
+        # 수십 ppm, SITL 은 RTF 오차로 ~0.3% 실측). 그 선형 drift 가 큐잉으로
+        # 오독된다 -- 음성 대조군(직결)에서 실제로 p90 200 ms 가짜 큐잉이 나와
+        # 잡은 결함이다. 큐잉은 추세 제거 후의 빠른 잔차다.
+        t = arr[:, 0] - arr[0, 0]
+        slope, intercept = np.polyfit(t, d, 1)
+        # 선형 detrend 만으로는 부족했다 -- SITL 은 RTF 가 부하 따라 흔들려
+        # 비선형 wobble 이 남고(직결 대조군에서 두 토픽이 **동일한** 잔차
+        # 프로파일 = 시계 공통 성분), 그것이 큐잉으로 또 오독된다. 큐잉은
+        # 메시지 단위의 빠른 대기이므로 **이동 중앙값(~2 s) high-pass** 잔차로
+        # 잰다. 실기 크리스털 drift 는 선형이라 어느 쪽이든 상쇄된다.
+        dt_med = float(np.median(np.diff(arr[:, 0]))) or 0.04
+        win = max(11, int(round(2.0 / dt_med)) | 1)          # 홀수 창
+        if len(d) > win:
+            from numpy.lib.stride_tricks import sliding_window_view
+            base = np.median(sliding_window_view(d, win), axis=-1)
+            pad = win // 2
+            base = np.concatenate([np.full(pad, base[0]), base,
+                                   np.full(len(d) - len(base) - pad, base[-1])])
+        else:
+            base = slope * t + intercept
+        resid = d - base
+        rel = resid - resid.min()
+        out[name] = d
+        print(f"  {name:6s} n={len(d):5d}  시계 drift {slope*1e6:+8.1f} ppm   "
+              f"큐잉(detrend 후 min 대비): 중앙 {np.median(rel)*1000:5.1f}  "
+              f"p10 {np.percentile(rel,10)*1000:5.1f}  "
+              f"p90 {np.percentile(rel,90)*1000:5.1f}  최대 {rel.max()*1000:6.1f} ms")
+        if offset_s is not None:
+            print(f"         절대 d(drift 미보정): 중앙 {np.median(d)*1000:8.1f}  최소 {d.min()*1000:8.1f} ms")
+        out[name] = resid
+    # 토픽 간 차는 공통 drift 가 상쇄되도록 detrend 잔차가 아니라 원시 d 로
+    # 재계산하면 안 된다(위에서 resid 로 교체됨) — 같은 창의 잔차 중앙 차면 충분.
+    dm = (np.median(out["servo"]) - np.median(out["ahrs"])) * 1000
+    print(f"  토픽 간 중앙 차 (servo − ahrs): {dm:+.1f} ms  (burst 내 순서·직렬화 간격의 흔적)")
+    spread = max(float(np.percentile(v - v.min(), 90)) for v in out.values()) * 1000  # noqa: E501 — detrend 잔차 기준
+    if spread > 15.0:
+        print(f"  ** 큐잉 성분 p90 {spread:.0f} ms — 잔차가 '대기'로 생기고 있다. "
+              "대역폭/라우터(§6a)를 볼 것. **")
+    else:
+        print(f"  큐잉 성분 p90 {spread:.0f} ms — 경로가 평평하다(상수 지연 지배).")
+    return out
+
+
 def xcorr_delay(t_x, x, t_y, y, *, max_lag_s=0.30, grid_dt=0.005):
     """y 가 x 보다 얼마나 늦는지 — 공통 격자 리샘플 후 교차상관.
 
@@ -487,16 +549,25 @@ def main() -> None:
                     help="skip 이후 사용할 길이 [s]. deadtime_test 의 duration_s "
                          "에서 --skip 을 뺀 값을 주면, 여기가 끝난 뒤의 "
                          "명령 0 구간이 r 을 희석하는 것을 막는다")
-    ap.add_argument("--mode", default="closed", choices=["closed", "m3", "m4"],
+    ap.add_argument("--mode", default="closed",
+                    choices=["closed", "m3", "m4", "transit"],
                     help="closed=기존 명령→가속 분석. m3=명령→서보출력(도착 시계), "
                          "m4=서보→자이로(FC 시계, 링크 무관) — 지연 분해용 "
                          "(LATENCY_DECOMPOSITION_PLAN.md)")
+    ap.add_argument("--offset", type=float, default=None,
+                    help="transit 전용: 랩톱−FC 시계 offset [s] (diag_link_rtt 출력). "
+                         "주면 절대 하행 시간, 없으면 상대 분포만")
     ap.add_argument("--open-loop", action="store_true",
                     help="주입한 여기로 잰 주행. 폐루프 진동 전제의 비교를 끄고 "
                          "대신 여기 대역폭이 정하는 지연 분해능을 보고한다")
     args = ap.parse_args()
 
     m_eff = args.m_eff if args.m_eff is not None else _M_EFF[args.axis]
+    if args.mode == "transit":
+        print(f"=== 편도 transit 분해   bag={args.bag}")
+        _wr, sv, gy = read_bag_fc(args.bag)
+        analyse_transit(sv, gy, offset_s=args.offset)
+        return
     if args.mode in ("m3", "m4"):
         print(f"=== 지연 분해 {args.mode.upper()}   bag={args.bag}")
         wr, sv, gy = read_bag_fc(args.bag)

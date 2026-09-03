@@ -1,3 +1,8 @@
+> **역할 변경 (2026-09-03):** 정본 배포는 `sim2swim_delayA_wa0017_mk2_s42_i299`
+> 로 승격됐다. 이 번들은 **대조군**(지연 없이 학습된 정책)으로 유지된다 —
+> 실기 80 ms dead time 에서 2 Hz relay limit cycle(포화 58~67%)을 보이는 것이
+> 이 번들의 문서화된 거동이며, delayA 의 개선 폭을 재는 기준선이다.
+
 # sim2swim_fixplant_wa0017_mk2_s42_i299
 
 `sim2swim_paperfix_wa0017_mk2_s42_i299`을 **수정된 plant 위에서 재학습**한 artifact.

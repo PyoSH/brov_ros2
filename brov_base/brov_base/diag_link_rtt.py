@@ -31,11 +31,23 @@ def _summary(name: str, rtts_ms: list[float]) -> None:
         print("  ** p90 이 중앙의 3배 초과 — 링크 jitter 가 크다. 평균만 인용하지 말 것. **")
 
 
-def measure_timesync(m, rounds: int) -> list[float]:
-    """MAVLink TIMESYNC 왕복. ts1 에코가 우리 것일 때만 채택한다."""
-    rtts = []
+def measure_timesync(m, rounds: int):
+    """MAVLink TIMESYNC 왕복. ts1 에코가 우리 것일 때만 채택한다.
+
+    응답의 tc1 = FC 가 요청을 받은 순간의 **FC 시계**[ns]다. 대칭 링크 가정으로
+        offset ≈ tc1 − (ts1 + rtt/2)
+    를 표본마다 얻고, **최소-RTT 표본**의 값을 추정치로 쓴다(큐잉이 안 낀
+    왕복일수록 대칭 가정이 잘 선다). 이 offset 이 있어야 transit 분해
+    (`diag_loop_delay --mode transit --offset`)가 상대 분포를 절대 하행
+    시간으로 바꿀 수 있다. 주의: FC 시계는 boot 기준이라 offset 은 크고
+    무의미해 보이는 수지만, 상수라는 것만 중요하다.
+    """
+    rtts, offsets = [], []
     for _ in range(rounds):
         ts1 = time.monotonic_ns()
+        # offset 은 **wall clock** 기준으로 잰다 -- transit 분해가 대조할 bag
+        # 도착 시각이 wall 이기 때문. RTT 는 monotonic 으로(시계 점프 무관).
+        wall_send = time.time_ns()
         m.mav.timesync_send(0, ts1)
         t_deadline = time.time() + 1.0
         while time.time() < t_deadline:
@@ -44,10 +56,12 @@ def measure_timesync(m, rounds: int) -> list[float]:
                 continue
             # 응답은 tc1!=0 이고 ts1 이 우리가 보낸 값 그대로다.
             if int(msg.tc1) != 0 and int(msg.ts1) == ts1:
-                rtts.append((time.monotonic_ns() - ts1) / 1e6)
+                rtt_ns = time.monotonic_ns() - ts1
+                rtts.append(rtt_ns / 1e6)
+                offsets.append((int(msg.tc1) - (wall_send + rtt_ns / 2)) / 1e9)
                 break
         time.sleep(0.05)
-    return rtts
+    return rtts, offsets
 
 
 def measure_param(m, rounds: int, name: str = "RC_SPEED") -> list[float]:
@@ -80,9 +94,14 @@ def main() -> None:
     m.wait_heartbeat(timeout=20)
     print(f"heartbeat OK (sys {m.target_system})")
 
-    ts = measure_timesync(m, args.rounds)
+    ts, offs = measure_timesync(m, args.rounds)
     if len(ts) >= args.rounds // 2:
         _summary("TIMESYNC RTT", ts)
+        best = int(np.argmin(ts))
+        unc = (np.percentile(ts, 90) - ts[best]) / 2.0
+        print(f"시계 offset (FC boot − 랩톱 wall): {offs[best]:+.6f} s "
+              f"± {unc:.1f} ms  [최소-RTT 표본 기준]")
+        print(f"  → diag_loop_delay --mode transit --offset {-offs[best]:.6f}")
     else:
         print(f"TIMESYNC 응답 부족({len(ts)}/{args.rounds}) — param 왕복으로 폴백")
         pr = measure_param(m, args.rounds)
