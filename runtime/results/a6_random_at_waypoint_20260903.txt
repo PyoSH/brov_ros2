@@ -1,0 +1,32 @@
+# random_at_waypoint 실기 첫 시험 (2026-09-03 18:32, bag: a3_delayA_random_at_waypoint_t50, 제어 29 s, 사용자 수동 종료)
+사용자 관찰: 한 자세로 끝까지 가더니 벽을 계속 밀었다.
+A50 폴링 (a50_poll_random_t50.log, 223 표본): 전체 valid 68 %, 순항(alt>0.2 m) 92 % → DVL 은 이 주행에서 정상.
+
+## 시간축 (제어 시작 기준)
+start 직전 실제 자세 rpy (+0.1, +1.3, +173.3°)  ← 기수가 NED 북에서 173° (거의 남향)
+목표 자세: 시작값 = start 자세 → 10°/s 로 slew → 최종 목표 (−12.6, −7.0, **+25.9°**) 에 ~11 s 도달
+  → yaw 목표가 start 대비 **−147°** (설정은 ±30° 였음)
+  0~11 s  실제 yaw 164 → 90 → 55°  (목표를 20~30° 뒤에서 따라감), v_surge 0.18 → 0.07
+  5.8 s   wp1 최근접 0.07 m (reach 0.3 안, 자세오차 3.7° < 10°) — **그러나 승인 안 됨**: 각속도 tolerance 5°/s 인데 slew 를 따라 ~10°/s 로 돌고 있었음 → dwell 1 s 가 쌓이지 않음
+          (0.3 m 원 안 2.5 s, 자세오차<10° 2.5 s, 각속도 조건 실패)
+  11~15 s 목표 도달(오차 14~19°), v_d −0.23 (waypoint 가 뒤), surge 명령 −15 → −65 N
+  ~13 s   미션프레임 x 2.85 m = **먼 쪽 벽** (다리 1.5 m), y 이탈 1.05 m
+  15~19 s 벽에 붙음: v 0, surge −65 N
+  20.0 s  **EKF yaw 가 한 틱에 +178° 점프** (자이로 적분은 −48° 로 매끈) = FC EKF yaw reset. 벽에서 −85 N 전추력 상태.
+  20~29 s 자세오차 160~176° → 정책 surge −85 N 100 % 포화. waypoint 전환 0, mission_complete 없음.
+
+## 원인 사슬
+1. **프레임 의미 불일치 (guidance_node → pool_to_mission_quaternion 호출).** 난수 yaw 는 'pool 프레임 절대각' 이다.
+   frame:=start_heading 에선 pool 측량이 없어 pool==odom==NED 북 이 되고, 노드가 헬퍼에 waypoint_frame='start_heading' 을
+   넘겨 mission 쪽에서 start yaw 를 빼므로 결과는 **NED 절대 yaw ±30°** 가 된다. 기수가 북이면 티가 안 나고, 오늘처럼
+   173° 면 147° 선회가 된다. 오프라인 재현: helper='start_heading' → start 대비 −147.4°, helper='ned' → **+25.9°** (의도).
+   → 고칠 곳: guidance_node.py 의 pool_to_mission_quaternion(...) 두 호출(생성 시, mission frame 확정 시)에서
+     start_heading 운용일 때 세 번째 인자를 'ned' 로. (guidance 는 이번에 수정하지 않음 — 사용자 지시.)
+2. 147° slew 는 15 s, 다리는 6 s → slew 중에는 각속도 조건(5°/s) 때문에 reach 가 승인될 수 없다 → wp1 통과 → 벽.
+   (목표가 ±30° 이내면 slew ≤3 s 로 상승 중에 끝나므로 이 게이트는 문제되지 않는다.)
+3. 벽에서 전추력 중 EKF yaw reset 178° → 자세오차 170° → 정책 포화. 1차 시도(17:08/17:09)의 벽 구간 yaw 변화는
+   자이로 적분과 일치(실제 회전)했으므로 reset 은 오늘 이 주행에서만 관측됨. 원인 후보: 전추력 전류의 자기 간섭.
+
+## 코드 수정 없이 시험하려면
+- 로봇을 **북향(state yaw ≈ 0°)** 으로 놓고 start 하면 pool == start 가 되어 ±30° 가 그대로 start 기준이 된다.
+- 또는 학습 PC 에서 위 한 토큰을 고치고 SITL 에서 확인한 뒤 실기.

@@ -1139,6 +1139,23 @@ for i in $(seq 300); do curl -s -m 1 http://192.168.2.95/api/v1/velocity; echo; 
   > runtime/results/a50_poll_$(date +%Y%m%d).log
 ```
 
+### Step 7 — `random_at_waypoint` 첫 실기 시험 (선택지 개방 후, 29 s, 벽)   원본: `a6_random_at_waypoint_20260903.txt`
+
+기수 173°(거의 남향)로 start. 난수 목표 yaw 가 **NED 절대 +25.9°** 로 나와 147° 선회를 10°/s 로
+15 s 동안 수행했고, 그 사이 wp1(5.8 s, 0.07 m, 자세오차 3.7°)은 각속도 조건(5°/s) 때문에 승인되지
+않아 통과 → 2.85 m 먼 벽에 붙어 −65~−85 N → 20 s 에 EKF yaw 한 틱 +178° reset(자이로는 매끈)
+→ 자세오차 170°, 포화 100 %. DVL 은 정상(순항 valid 92 %).
+
+**원인은 프레임 의미다.** 난수 yaw 는 pool 프레임 절대각인데 `start_heading` 운용은 pool 측량이
+없어 pool == NED 북이 되고, 노드가 헬퍼에 `'start_heading'` 을 넘겨 mission 쪽에서 start yaw
+를 빼므로 결과가 NED 절대 ±30° 가 된다. 오프라인 재현: 헬퍼 `'start_heading'` → start 대비
+−147.4°, `'ned'` → **+25.9°**(의도). 고칠 곳은 `guidance_node.py` 의 `pool_to_mission_quaternion`
+두 호출의 세 번째 인자 — **이번엔 수정하지 않았다(사용자 지시).**
+
+코드 수정 없이 다시 시험하려면 **로봇을 북향(state yaw ≈ 0°)으로 놓고** start 한다 — 그러면
+pool == start 라 ±30° 가 start 기준이 된다. 벽에서 전추력 중 EKF yaw reset 은 오늘 이 주행에서만
+관측됐고(1차 시도의 벽 구간은 실제 회전), 원인 후보는 전추력 전류의 자기 간섭이다.
+
 ## 가져올 것 (4차)
 
 ```
@@ -1148,4 +1165,5 @@ a2_yaw_t25 / a2_yaw_t50 bag, g1_t25_t50_*.txt
 rpi_transit_*.csv, transit_split_*.txt
 a3_delayA_align_t50 / a3_delayA_straight_t50 bag, a1_saturation·a1_band·a1_drift 출력
 (선택) 14561 endpoint 의 M2/M3, do_set_servo 의 M3
+random_at_waypoint bag + a50_poll_random_t50.log (실패 원인 분석용)
 ```

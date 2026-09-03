@@ -309,6 +309,7 @@ FC 내부+telemetry  64.4 ms  ████████████████�
 | 2 | **지연 DR 확대 (학습 PC)** — 주입 중심 59 ms, 주행별 ±10 | surge 2 Hz 는 50 Hz 로 안 움직임 (×1.14). 유일한 잔여 진동 |
 | 3 | telemetry 100 Hz 시험 | 50 Hz 에서 FC load 16.8 %. 위상 폭 20→10 |
 | 4 | `ekf_flags` 를 BrovState 에 | 발산 순간을 사후에 보게 |
+| 5 | `random_at_waypoint` start_heading 프레임 수정 (학습 PC, guidance_node) | Step 7: 난수 yaw 가 NED 절대각 → 147° 선회 → 벽. 우회: 북향 start |
 | — | ~~telemetry 50 Hz 확정~~ | **완료** — τ 80, M3 60, 주행별 ±10 |
 | — | ~~64.4 ms 의 정체~~ | **완료** — ArduSub 안(RC 표본화 + 슬롯 대기). 링크 17 ms |
 | — | ~~온보드 이전 / 라우터 / endpoint / DO_SET_SERVO~~ | **전부 이유 소멸** (하행 10 ms; DO_SET_SERVO 는 +80 ms 더 나쁨) |

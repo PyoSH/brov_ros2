@@ -122,3 +122,5 @@ EKF 벽 문제는 **간헐적**: 4 회 정상 시도 중 2 회(17:08 align, 17:0
 → 이륙 순간 EKF 위치 점프(3~6 s)의 원인 = 바닥에서 DVL lock 이 원리적으로 불가(고도 4 cm) → 뜨면서 재수렴.
 → 09-03 새벽 straight 61 % (발산) vs 오늘 align 82~88 % (173 s 정상): **순항 valid ≥ ~80 % 가 정상 주행의 조건**으로 쓸 수 있다.
 → 17:23/17:25 의 "DVL 작동 불가" (완전 상실) 는 이 log 밖. 센서 자체(4 빔 정상)보다 BlueOS extension/TCP 경로가 의심된다.
+
+## Step 7 — random_at_waypoint 첫 실기 시험 → 벽. 원인: 난수 yaw 가 NED 절대각 (start 기준 아님). 상세: a6_random_at_waypoint_20260903.txt
